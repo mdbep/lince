@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Lince — Glass Shutter</title>
+  <defs>
+    <path id="tile" d="
+      M370 100 H654
+      C747 100 793 100 836 123 C864 138 886 160 901 188 C924 231 924 277 924 370
+      V654
+      C924 747 924 793 901 836 C886 864 864 886 836 901 C793 924 747 924 654 924
+      H370
+      C277 924 231 924 188 901 C160 886 138 864 123 836 C100 793 100 747 100 654
+      V370
+      C100 277 100 231 123 188 C138 160 160 138 188 123 C231 100 277 100 370 100 Z"/>
+    <linearGradient id="porcelain" x1="320" y1="100" x2="690" y2="924"
+                    gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FCFDF6"/>
+      <stop offset=".52" stop-color="#F1F5EC"/>
+      <stop offset="1" stop-color="#D7E4DF"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#AFBFBA"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%"
+            color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="9"/>
+    </filter>
+  </defs>
+  <use xlink:href="#tile" transform="translate(0 9)" fill="#142F32" opacity=".18"
+       filter="url(#shadow)"/>
+  <use xlink:href="#tile" fill="url(#porcelain)" stroke="url(#rim)" stroke-width="2"/>
+
+  <!-- Each inner edge continues into the gap between the two adjacent blades. -->
+  <path fill="#154F53" d="M267.01 643.39 A278 278 0 0 1 243.89 438.50 L429.42 438.50 Z"/>
+  <path fill="#26736E" d="M249.14 421.50 A278 278 0 0 1 422.52 248.80 L559.42 421.50 Z"/>
+  <path fill="#459387" d="M440.00 243.49 A278 278 0 0 1 747.83 364.80 L642.00 498.32 Z"/>
+  <path fill="#2C7975" d="M756.99 380.61 A278 278 0 0 1 780.11 585.50 L594.58 585.50 Z"/>
+  <path fill="#1A5C60" d="M774.86 602.50 A278 278 0 0 1 601.48 775.20 L464.58 602.50 Z"/>
+  <path fill="#113F46" d="M584.00 780.51 A278 278 0 0 1 276.17 659.20 L382.00 525.68 Z"/>
+</svg>

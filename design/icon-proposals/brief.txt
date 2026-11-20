@@ -1,0 +1,17 @@
+You are designing the app icon for "Lince", a native macOS screenshot utility (menu bar app: area and full-screen capture, floating thumbnail, annotation editor). "Lince" is Spanish for lynx: sharp eyesight, speed, precision. Accent colour so far is a warm orange (#F57D21) but you are free to propose better palettes.
+
+Deliver 5 clearly different icon concepts, each as a hand-written, production-quality SVG in the current directory:
+  icon-1.svg ... icon-5.svg   (viewBox 0 0 1024 1024)
+
+Requirements for every concept:
+- macOS app icon conventions: a rounded-square ("squircle") body of about 824x824 centred in the 1024 canvas (100px margin), continuous-corner radius about 185, transparent outside the body. Subtle depth is welcome (soft gradient, gentle inner highlight, soft drop shadow inside the canvas margin) but keep it clean and modern, not skeuomorphic clutter.
+- One strong, simple central mark that stays recognisable at 16x16 and 32x32. No text, no letters, no thin hairlines.
+- It must read as "screen capture" and ideally hint at the lynx (eye with slit pupil, tufted ears, viewfinder/crop corners, aperture, selection marquee...). Explore different directions: e.g. viewfinder + feline eye, geometric lynx head built from crop corners, ear tufts as selection handles, abstract aperture/iris, minimal monogram-free mark.
+- Pure SVG shapes, gradients and filters only (no embedded bitmaps, no external fonts or links). Must render correctly with rsvg-convert / WebKit / qlmanage.
+- Looks good on both light and dark Dock backgrounds.
+
+Also deliver for each concept a matching menu bar glyph: menubar-1.svg ... menubar-5.svg (viewBox 0 0 18 18, single colour black on transparent, strokes >= 1.5, suitable as a macOS template image).
+
+Finally write NOTES.md with one short paragraph per concept: the idea, the palette (hex values) and why it works at small sizes.
+
+If you have an image generation tool available, you may additionally save rendered PNG explorations as concept-N.png, but the SVG files are mandatory. Work only inside the current directory. Do not ask questions; make the design decisions yourself.

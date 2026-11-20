@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title" aria-describedby="desc">
+  <title id="title">Lince — Field Mask</title>
+  <desc id="desc">A tufted ink-black lynx looks out between two ivory crop corners on a vermilion tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="320" y1="100" x2="652" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FF9B56"/>
+      <stop offset=".48" stop-color="#FC7942"/>
+      <stop offset="1" stop-color="#EB5934"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#tile)" d="M370 100H654
+    C747 100 793 100 836 123
+    C864 138 886 160 901 188
+    C924 231 924 277 924 370V654
+    C924 747 924 793 901 836
+    C886 864 864 886 836 901
+    C793 924 747 924 654 924H370
+    C277 924 231 924 188 901
+    C160 886 138 864 123 836
+    C100 793 100 747 100 654V370
+    C100 277 100 231 123 188
+    C138 160 160 138 188 123
+    C231 100 277 100 370 100Z"/>
+  <!-- The upper vertices of the field are the lynx's two ear brushes. -->
+  <path fill="#2B2023" fill-rule="evenodd" d="M292 255
+    Q292 249 298 253L355 303 347 270
+    Q346 264 352 269L457 375
+    Q462 380 470 380H554Q562 380 567 375L672 269
+    Q678 264 677 270L669 303 726 253Q732 249 732 255
+    L717 464 761 518Q764 523 759 527L722 548
+    L743 565Q747 569 742 573L565 687
+    Q542 704 512 704Q482 704 459 687L282 573
+    Q277 569 281 565L302 548 265 527Q260 523 263 518L307 464Z
+    M352 451L470 489Q483 493 488 507L493 533
+    L394 516Q384 514 377 505Z
+    M672 451L554 489Q541 493 536 507L531 533
+    L630 516Q640 514 647 505Z
+    M478 595Q475 590 482 590H542Q549 590 546 595L520 621
+    Q512 629 504 621Z"/>
+  <!-- Bold lower registration corners finish the capture field. -->
+  <path fill="#FFEBD1" d="M260 607H313V680H403V733H300
+    Q260 733 260 693Z
+    M764 607H711V680H621V733H724Q764 733 764 693Z"/>
+</svg>

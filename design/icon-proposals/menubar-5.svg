@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18">
+  <title>Lince — Window Flash menu bar glyph</title>
+  <path fill="#000" fill-rule="evenodd" d="
+    M1 6.7V4.8Q1 2.6 3.2 2.6H14.8Q17 2.6 17 4.8V6.7Z
+    M4.05 4.65a.75 .75 0 1 1-1.5 0a.75 .75 0 1 1 1.5 0Z
+    M6.55 4.65a.75 .75 0 1 1-1.5 0a.75 .75 0 1 1 1.5 0Z
+    M9.05 4.65a.75 .75 0 1 1-1.5 0a.75 .75 0 1 1 1.5 0Z"/>
+  <!-- At template size the flash opens straight through the sill. -->
+  <path fill="#000" d="
+    M1 8.25H17V13.25Q17 15.4 14.85 15.4H12.54
+    C12.95 13.55 13.92 12.62 16.05 12.02
+    C13.75 11.47 12.77 10.46 12.35 8.49
+    C11.85 10.46 10.86 11.46 8.43 12.02
+    C10.73 12.6 11.61 13.58 11.96 15.4
+    H3.15Q1 15.4 1 13.25Z"/>
+</svg>

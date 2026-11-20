@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Lince — Window Flash</title>
+  <desc>A pale flash crosses the sill of a dark desktop window on citron.</desc>
+  <defs>
+    <linearGradient id="citron" x1="370" y1="100" x2="650" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#EEFA97"/>
+      <stop offset=".52" stop-color="#DCF171"/>
+      <stop offset="1" stop-color="#C8E45F"/>
+    </linearGradient>
+  </defs>
+
+  <path fill="url(#citron)" d="
+    M370 100H654
+    C747 100 793 100 836 123 C864 138 886 160 901 188 C924 231 924 277 924 370
+    V654 C924 747 924 793 901 836 C886 864 864 886 836 901 C793 924 747 924 654 924
+    H370 C277 924 231 924 188 901 C160 886 138 864 123 836 C100 793 100 747 100 654
+    V370 C100 277 100 231 123 188 C138 160 160 138 188 123 C231 100 277 100 370 100Z"/>
+
+  <!-- Three punched controls give the window its macOS title-bar silhouette. -->
+  <path fill="#22372B" d="
+    M224 409V361Q224 301 284 301H740Q800 301 800 361V409Z
+    M224 441H800V647Q800 707 740 707H284Q224 707 224 647Z"/>
+  <g fill="#E6F684">
+    <circle cx="284" cy="355" r="17"/>
+    <circle cx="341" cy="355" r="17"/>
+    <circle cx="398" cy="355" r="17"/>
+  </g>
+
+  <!-- The long lower ray carries the flash beyond the window. -->
+  <path fill="#FFFCE8" d="
+    M630 451 C645 548 681 579 778 600 C679 620 644 658 619 763
+    C606 661 571 624 471 600 C571 579 608 546 630 451Z"/>
+</svg>

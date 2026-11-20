@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Lince — Night Sight</title>
+  <desc>An amber feline eye sits between two ivory viewfinder corners on dark graphite.</desc>
+  <defs>
+    <linearGradient id="graphite" x1="260" y1="100" x2="721" y2="925" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#34424A"/>
+      <stop offset=".55" stop-color="#222E36"/>
+      <stop offset="1" stop-color="#182128"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#58676E"/>
+      <stop offset="1" stop-color="#33414A"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="427" y1="373" x2="568" y2="651" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFC171"/>
+      <stop offset=".64" stop-color="#F57D21"/>
+      <stop offset="1" stop-color="#ED711D"/>
+    </linearGradient>
+  </defs>
+
+  <path fill="url(#graphite)" stroke="url(#edge)" stroke-width="2" d="
+    M370 100H654
+    C747 100 793 100 836 123 C864 138 886 160 901 188 C924 231 924 277 924 370
+    V654 C924 747 924 793 901 836 C886 864 864 886 836 901 C793 924 747 924 654 924
+    H370 C277 924 231 924 188 901 C160 886 138 864 123 836 C100 793 100 747 100 654
+    V370 C100 277 100 231 123 188 C138 160 160 138 188 123 C231 100 277 100 370 100Z"/>
+
+  <!-- The open diagonal keeps both ends of the almond clear of the brackets. -->
+  <path fill="#F3E8D5" d="
+    M231 401V325 Q231 275 281 275H397 Q405 275 405 283V317 Q405 325 397 325H297
+    Q283 325 283 339V401 Q283 409 275 409H239 Q231 409 231 401Z
+    M793 623V699 Q793 749 743 749H627 Q619 749 619 741V707 Q619 699 627 699H727
+    Q741 699 741 685V623 Q741 615 749 615H785 Q793 615 793 623Z"/>
+
+  <!-- A cut-through pupil picks up the ground at every point along its length. -->
+  <path fill="url(#amber)" fill-rule="evenodd" d="
+    M251 512 C318 425 414 369 512 369 C610 369 706 425 773 512
+    C706 599 610 655 512 655 C414 655 318 599 251 512Z
+    M512 397 C488 428 465 477 465 512 C465 547 488 596 512 627
+    C536 596 559 547 559 512 C559 477 536 428 512 397Z"/>
+</svg>

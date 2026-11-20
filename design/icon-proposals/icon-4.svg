@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"
+     viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Lince — Drag to Capture</title>
+  <defs>
+    <linearGradient id="tile" x1="248" y1="100" x2="761" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7468F0"/>
+      <stop offset=".52" stop-color="#5148CC"/>
+      <stop offset="1" stop-color="#373396"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#BCB7FF"/>
+      <stop offset="1" stop-color="#302B83"/>
+    </linearGradient>
+    <linearGradient id="selection" x1="273" y1="288" x2="673" y2="634" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E4DEFF" stop-opacity=".21"/>
+      <stop offset="1" stop-color="#E4DEFF" stop-opacity=".08"/>
+    </linearGradient>
+    <linearGradient id="pointer" x1="552" y1="454" x2="692" y2="762" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFE9AD"/>
+      <stop offset="1" stop-color="#FFD180"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Long tangent runs ease the flat edges into each corner. -->
+  <path fill="url(#tile)" stroke="url(#rim)" stroke-width="2"
+        d="M370 100H654C747 100 793 100 836 123
+           C864 138 886 160 901 188C924 231 924 277 924 370V654
+           C924 747 924 793 901 836C886 864 864 886 836 901
+           C793 924 747 924 654 924H370C277 924 231 924 188 901
+           C160 886 138 864 123 836C100 793 100 747 100 654V370
+           C100 277 100 231 123 188C138 160 160 138 188 123
+           C231 100 277 100 370 100Z"/>
+
+  <!-- Three substantial runs suggest the marching boundary of an area selection. -->
+  <path fill="url(#selection)"
+        d="M304 305H665Q704 305 704 344V598Q704 637 665 637H304
+           Q265 637 265 598V344Q265 305 304 305Z"/>
+  <path fill="none" stroke="#F9F6FF" stroke-width="59" stroke-linecap="round"
+        d="M265 425V344Q265 305 304 305H482
+           M575 305H665Q704 305 704 344V427
+           M265 522V598Q265 637 304 637H431"/>
+
+  <!-- A broad, bespoke pointer occupies the missing fourth corner. -->
+  <path fill="url(#pointer)"
+        d="M496 444
+           Q494 428 508 436L786 591
+           Q798 598 786 604L682 638
+           L744 723Q750 731 742 737L696 770Q688 776 682 768
+           L620 682L556 766Q548 777 545 762Z"/>
+</svg>
