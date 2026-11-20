@@ -160,6 +160,21 @@ enum Snapshot {
         write(pin, to: directory.appendingPathComponent("pin.png"))
         _ = pinWindow
 
+        // Vista previa: una captura pequeña se amplía y una grande se ajusta a la pantalla.
+        let previewArea = CGSize(width: 1440, height: 900)
+        for (name, size) in [("pequeña", CGSize(width: 240, height: 120)), ("mediana", CGSize(width: 800, height: 500)),
+                             ("grande", CGSize(width: 3000, height: 1600))] {
+            let shown = PreviewController.displaySize(for: size, in: previewArea)
+            report += "Vista previa \(name) \(Int(size.width))x\(Int(size.height)) -> \(Int(shown.width))x\(Int(shown.height))\n"
+        }
+        let previewSize = CGSize(width: 1280, height: 800)
+        let previewView = PreviewView(frame: CGRect(origin: .zero, size: previewSize), image: image,
+                                  pointSize: CGSize(width: 420, height: 260))
+        let previewWindow = host(previewView, size: previewSize)
+        previewView.debugShow()
+        write(previewView, to: directory.appendingPathComponent("preview.png"))
+        _ = previewWindow
+
         let countdown = CountdownView(frame: CGRect(origin: .zero, size: CountdownView.size), total: 5)
         let countdownWindow = host(countdown, size: CountdownView.size)
         countdown.show(3)

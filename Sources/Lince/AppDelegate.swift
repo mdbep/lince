@@ -1,10 +1,8 @@
 import AppKit
 import Carbon.HIToolbox
-import Quartz
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, ThumbnailActions,
-                         QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, ThumbnailActions {
     private var statusItem: NSStatusItem!
     private var areaItem: NSMenuItem!
     private var fullItem: NSMenuItem!
@@ -17,7 +15,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     private let selection = SelectionController()
     private let thumbnails = ThumbnailManager()
     private var editors: [EditorController] = []
-    private var previewURL: URL?
     private var isCapturing = false
     private var shortcutTimer: Timer?
     private var commandShortcutIDs: [UInt32] = []
@@ -391,44 +388,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     }
 
     func thumbnailPreview(_ capture: Capture) {
-        guard let url = capture.temporaryFileURL(), let panel = QLPreviewPanel.shared() else { return }
-        if panel.isVisible, previewURL == url {
-            panel.orderOut(nil)
-            return
+        let controller = thumbnails.controller(for: capture)
+        guard let screen = controller?.panel.screen ?? controller?.screen ?? NSScreen.main else { return }
+        let id = capture.id
+        PreviewController.shared.toggle(capture, on: screen) { [weak self] in
+            self?.thumbnails.controller(forID: id)?.imageFrameOnScreen
         }
-        previewURL = url
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        // Como app sin ventanas principales, tomamos el control del panel directamente.
-        if panel.dataSource !== self {
-            panel.dataSource = self
-            panel.delegate = self
-        }
-        panel.reloadData()
     }
 
     func thumbnailReport(error: Error) {
         NSApp.activate(ignoringOtherApps: true)
         NSAlert(error: error).runModal()
-    }
-
-    // MARK: - Vista Rápida
-
-    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { previewURL != nil }
-
-    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        panel.dataSource = self
-        panel.delegate = self
-    }
-
-    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {
-        panel.dataSource = nil
-        panel.delegate = nil
-    }
-
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { previewURL == nil ? 0 : 1 }
-
-    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
-        previewURL as NSURL?
     }
 }

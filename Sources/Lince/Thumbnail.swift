@@ -213,9 +213,20 @@ final class ThumbnailController {
         view.setImage(capture.image, pointSize: capture.pointSize)
     }
 
+    /// Rectángulo que ocupa la imagen dentro de la miniatura, en coordenadas de pantalla.
+    var imageFrameOnScreen: CGRect? {
+        guard !isDismissed, panel.isVisible else { return nil }
+        let frame = panel.frame, size = capture.pointSize
+        guard size.width > 0, size.height > 0 else { return frame }
+        let factor = min(frame.width / size.width, frame.height / size.height)
+        let width = size.width * factor, height = size.height * factor
+        return CGRect(x: frame.midX - width / 2, y: frame.midY - height / 2, width: width, height: height)
+    }
+
     func dismiss() {
         guard !isDismissed else { return }
         isDismissed = true
+        PreviewController.shared.close(ifShowing: capture.id)
         manager?.remove(self)
         let panel = self.panel
         let capture = self.capture
