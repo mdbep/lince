@@ -200,7 +200,8 @@ final class WelcomeController: NSObject, NSWindowDelegate {
         cap.translatesAutoresizingMaskIntoConstraints = false
         cap.addSubview(label)
         NSLayoutConstraint.activate([
-            cap.widthAnchor.constraint(equalToConstant: 26),
+            cap.widthAnchor.constraint(greaterThanOrEqualToConstant: 26),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: cap.leadingAnchor, constant: 6),
             cap.heightAnchor.constraint(equalToConstant: 24),
             label.centerXAnchor.constraint(equalTo: cap.centerXAnchor),
             label.centerYAnchor.constraint(equalTo: cap.centerYAnchor),
@@ -241,19 +242,19 @@ final class WelcomeController: NSObject, NSWindowDelegate {
 
         let native = SystemShortcuts.nativeScreenshotsEnabled
         setStatus(shortcutIcon, ok: !native)
-        let modifier = native ? "⌃" : "⌘"
-        setKeys(areaKeys, [modifier, "⇧", "4"])
-        setKeys(fullKeys, [modifier, "⇧", "3"])
-        setKeys(textKeys, ["⌃", "⇧", "2"])
-        setKeys(repeatKeys, ["⌃", "⇧", "5"])
+        func keys(_ action: ShortcutAction) -> [String] { ShortcutStore.shortcut(for: action)?.keys ?? ["—"] }
+        setKeys(areaKeys, native ? keys(.area) : ["⌘", "⇧", "4"])
+        setKeys(fullKeys, native ? keys(.fullScreen) : ["⌘", "⇧", "3"])
+        setKeys(textKeys, keys(.text))
+        setKeys(repeatKeys, keys(.repeatArea))
         if native {
             shortcutDetail.stringValue = shortcutFailed
                 ? "macOS no ha dejado cambiarlo desde aquí. Hazlo a mano en Ajustes › Teclado › Funciones rápidas de teclado › Capturas de pantalla, desmarcando las dos primeras."
-                : "Ahora mismo ⌘⇧3 y ⌘⇧4 son de macOS. Con un clic pasan a Lince; puedes devolvérselos cuando quieras desde el menú."
+                : "Ahora mismo ⌘⇧3 y ⌘⇧4 son de macOS. Con un clic pasan a Lince; puedes devolvérselos cuando quieras desde Ajustes."
             shortcutButton.setTitle(shortcutFailed ? "Abrir ajustes de teclado" : "Usar ⌘⇧3 y ⌘⇧4 con Lince")
             shortcutButton.isHidden = false
         } else {
-            shortcutDetail.stringValue = "Lince ha sustituido los atajos de captura de macOS. ⌃⇧3 y ⌃⇧4 también siguen funcionando."
+            shortcutDetail.stringValue = "Lince ha sustituido los atajos de captura de macOS. Los demás se cambian en Ajustes › Atajos."
             shortcutButton.isHidden = true
         }
     }

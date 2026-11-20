@@ -60,6 +60,41 @@ enum Snapshot {
             write(content, to: directory.appendingPathComponent("editor.png"))
         }
 
+        // Con LINCE_SNAPSHOT_LIVE, la ventana real del editor (marco, esquinas y botones del sistema).
+        if ProcessInfo.processInfo.environment["LINCE_SNAPSHOT_LIVE"] != nil {
+            let live = EditorController(capture: Capture(image: image, scale: 2))
+            live.window.center()
+            live.show()
+            spin(until: { false }, timeout: 1.5)
+            let info = WindowInfo(id: CGWindowID(live.window.windowNumber), frame: live.window.frame, appName: "Lince")
+            var done = false
+            var liveError = ""
+            Task {
+                do {
+                    if let shot = try await ScreenCapturer.captureWindow(info),
+                       let data = Capture.encodePNG(shot.image, scale: shot.scale) {
+                        try data.write(to: directory.appendingPathComponent("editor-window.png"))
+                    } else {
+                        liveError = "la ventana no aparece en la lista"
+                    }
+                } catch {
+                    liveError = "\(error)"
+                }
+                done = true
+            }
+            spin(until: { done }, timeout: 10)
+            if let frameView = live.window.contentView?.superview {
+                write(frameView, to: directory.appendingPathComponent("editor-frame.png"))
+            }
+            if !liveError.isEmpty { report += "Captura del editor real: \(liveError)\n" }
+            if let zoom = live.window.standardWindowButton(.zoomButton), let host = zoom.superview {
+                let frame = host.convert(zoom.frame, to: nil)
+                let bar = live.window.frame.height - live.window.contentLayoutRect.height
+                report += "Editor real: barra \(bar) pt, botón \(frame.width)x\(frame.height) en y=\(live.window.frame.height - frame.midY)\n"
+            }
+            live.window.close()
+        }
+
         // Selección: antes de arrastrar y con un área marcada.
         if let screen = NSScreen.main {
             let size = CGSize(width: 1200, height: 750)
@@ -83,7 +118,7 @@ enum Snapshot {
 
         // Fondo: el editor con un degradado y la imagen final que se exporta.
         let backdropEditor = EditorController(capture: Capture(image: image, scale: 2))
-        let composed = backdropEditor.debugSetBackdrop(BackdropChoice(style: 1, padding: 1))
+        let composed = backdropEditor.debugSetBackdrop(BackdropChoice(style: 4))
         backdropEditor.window.layoutIfNeeded()
         if let content = backdropEditor.window.contentView {
             write(content, to: directory.appendingPathComponent("editor-backdrop.png"))
@@ -93,11 +128,28 @@ enum Snapshot {
             report += "Fondo: \(image.width)x\(image.height) -> \(composed.width)x\(composed.height)\n"
         }
 
+        // Selector de fondo, y un fondo con margen amplio, esquinas marcadas y sin sombra.
+        let wideChoice = BackdropChoice(style: 6, padding: 0.2, radius: 32, shadow: 0)
+        let panel = BackdropPanel(current: wideChoice, options: wideChoice, ownsShape: false,
+                                  autoColors: Backdrop.autoColors(for: image))
+        let panelSize = panel.fittingSize
+        panel.wantsLayer = true
+        panel.layer?.backgroundColor = Theme.chrome.cgColor
+        let panelWindow = host(panel, size: panelSize)
+        write(panel, to: directory.appendingPathComponent("backdrop-panel.png"))
+        _ = panelWindow
+        report += "Selector de fondo: \(Int(panelSize.width))x\(Int(panelSize.height)), \(Backdrop.styles.count) fondos\n"
+        if let wide = Backdrop.compose(image, choice: wideChoice, unit: 2, hasTransparency: false),
+           let data = Capture.encodePNG(wide, scale: 2) {
+            try? data.write(to: directory.appendingPathComponent("backdrop-custom.png"))
+            report += "Fondo con margen 20 %: \(image.width)x\(image.height) -> \(wide.width)x\(wide.height)\n"
+        }
+
         // Sombra de ventana: una "ventana" con esquinas transparentes, con sombra y sobre un fondo.
         let windowImage = roundedWindow(width: 900, height: 600)
         if let shadowed = Backdrop.addWindowShadow(to: windowImage, unit: 2) {
             report += "Sombra de ventana: \(windowImage.width)x\(windowImage.height) -> \(shadowed.width)x\(shadowed.height)\n"
-            if let onBackdrop = Backdrop.compose(shadowed, choice: BackdropChoice(style: 2, padding: 0), unit: 2,
+            if let onBackdrop = Backdrop.compose(shadowed, choice: BackdropChoice(style: 7, padding: 0.045), unit: 2,
                                                  hasTransparency: true),
                let data = Capture.encodePNG(onBackdrop, scale: 2) {
                 try? data.write(to: directory.appendingPathComponent("window-shadow.png"))
@@ -160,15 +212,16 @@ enum Snapshot {
         write(pin, to: directory.appendingPathComponent("pin.png"))
         _ = pinWindow
 
-        // Vista previa: una captura pequeña se amplía y una grande se ajusta a la pantalla.
+        // Vista previa: mismo tamaño que en el editor; real, o reducido si no cabe.
         let previewArea = CGSize(width: 1440, height: 900)
         for (name, size) in [("pequeña", CGSize(width: 240, height: 120)), ("mediana", CGSize(width: 800, height: 500)),
                              ("grande", CGSize(width: 3000, height: 1600))] {
-            let shown = PreviewController.displaySize(for: size, in: previewArea)
+            let shown = EditorController.imageSize(for: size, visible: previewArea)
             report += "Vista previa \(name) \(Int(size.width))x\(Int(size.height)) -> \(Int(shown.width))x\(Int(shown.height))\n"
         }
         let previewSize = CGSize(width: 1280, height: 800)
-        let previewView = PreviewView(frame: CGRect(origin: .zero, size: previewSize), image: image,
+        let previewView = PreviewView(frame: CGRect(origin: .zero, size: previewSize), visible: previewSize,
+                                      image: image,
                                   pointSize: CGSize(width: 420, height: 260))
         let previewWindow = host(previewView, size: previewSize)
         previewView.debugShow()
@@ -185,6 +238,78 @@ enum Snapshot {
         let toastWindow = host(toast, size: toast.fittingSize)
         write(toast, to: directory.appendingPathComponent("toast.png"))
         _ = toastWindow
+
+        // Bandeja: la miniatura de delante con el contador de la pila, y una de detrás, atenuada.
+        for (name, depth, count) in [("stack-front", 0, 3), ("stack-behind", 1, 0)] {
+            let size = ThumbnailController.thumbnailSize(for: CGSize(width: 800, height: 500))
+            let view = ThumbnailView(frame: CGRect(origin: .zero, size: size))
+            view.setImage(image, pointSize: CGSize(width: 800, height: 500))
+            let stackWindow = host(view, size: size)
+            view.setStack(depth: depth, badge: count)
+            spin(until: { false }, timeout: 0.4)
+            write(view, to: directory.appendingPathComponent("\(name).png"))
+            _ = stackWindow
+        }
+
+        // Paleta de comandos: todas las acciones y un filtro.
+        let sample = [
+            Command(title: "Capturar área", symbol: "rectangle.dashed", keywords: "seleccion", keys: ["⌃", "⇧", "4"]) {},
+            Command(title: "Capturar ventana", symbol: "macwindow") {},
+            Command(title: "Capturar pantalla completa", symbol: "display", keys: ["⌃", "⇧", "3"]) {},
+            Command(title: "Copiar texto de la pantalla", symbol: "text.viewfinder", keywords: "ocr", keys: ["⌃", "⇧", "2"]) {},
+            Command(title: "Historial de capturas", symbol: "clock.arrow.circlepath") {},
+            Command(title: "Abrir carpeta de capturas", symbol: "folder") {},
+            Command(title: "Ajustes", symbol: "gearshape", keywords: "preferencias configuracion") {},
+            Command(title: "Paleta de comandos", symbol: "command", keys: ["⌃", "⇧", "Espacio"]) {},
+            Command(title: "Salir de Lince", symbol: "power") {},
+        ]
+        func titles(_ query: String) -> String {
+            CommandPaletteController.filter(sample, query: query).map(\.title).joined(separator: " | ")
+        }
+        report += "Paleta «cap»: \(titles("cap"))\n"
+        report += "Paleta «configuración»: \(titles("configuración"))\n"
+        report += "Paleta «texto ocr»: \(titles("texto ocr"))\n"
+        report += "Paleta «zzz»: [\(titles("zzz"))]\n"
+        for (name, query) in [("palette", ""), ("palette-filter", "cap")] {
+            let palette = CommandPaletteController()
+            let content = palette.makeContent()
+            let size = palette.debugLoad(sample, query: query)
+            content.frame = CGRect(origin: .zero, size: size)
+            let paletteWindow = host(content, size: size)
+            write(content, to: directory.appendingPathComponent("\(name).png"))
+            _ = paletteWindow
+        }
+
+        // Ajustes: las tres pestañas.
+        for (index, name) in ["settings-general", "settings-capture", "settings-shortcuts"].enumerated() {
+            let settings = SettingsController()
+            let content = settings.makeContent()
+            settings.select(index, animated: false)
+            settings.refresh()
+            let size = content.fittingSize
+            content.frame = CGRect(origin: .zero, size: size)
+            let settingsWindow = host(content, size: size)
+            write(content, to: directory.appendingPathComponent("\(name).png"))
+            _ = settingsWindow
+        }
+
+        // Atajos, colores sacados de la captura y sonido.
+        let defaults = ShortcutAction.allCases.map { "\($0.title): \($0.defaultShortcut?.display ?? "sin atajo")" }
+        report += "Atajos por defecto: \(defaults.joined(separator: ", "))\n"
+        func hex(_ color: NSColor) -> String {
+            let c = color.usingColorSpace(.sRGB) ?? color
+            return String(format: "#%02X%02X%02X", Int(c.redComponent * 255), Int(c.greenComponent * 255), Int(c.blueComponent * 255))
+        }
+        report += "Fondo automático: \(Backdrop.autoColors(for: image).map(hex).joined(separator: " → "))\n"
+        report += "Colores sugeridos: \(Backdrop.suggestedColors(for: image).map(hex).joined(separator: ", "))\n"
+        let wav = Shutter.linceWAV()
+        report += "Sonido de Lince: \(wav.count) bytes, se puede cargar: \(NSSound(data: wav) != nil)\n"
+        try? wav.write(to: directory.appendingPathComponent("lince-shutter.wav"))
+        if let autoImage = Backdrop.compose(image, choice: BackdropChoice(style: 0, auto: Backdrop.autoColors(for: image)),
+                                            unit: 2, hasTransparency: false),
+           let data = Capture.encodePNG(autoImage, scale: 2) {
+            try? data.write(to: directory.appendingPathComponent("backdrop-auto.png"))
+        }
 
         try? report.write(to: directory.appendingPathComponent("export.txt"), atomically: true, encoding: .utf8)
 

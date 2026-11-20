@@ -7,11 +7,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     private var areaItem: NSMenuItem!
     private var fullItem: NSMenuItem!
     private var repeatItem: NSMenuItem!
-    private var overrideItem: NSMenuItem!
-    private var loupeItem: NSMenuItem!
-    private var iconsItem: NSMenuItem!
-    private var shadowItem: NSMenuItem!
-    private var loginItem: NSMenuItem!
+    private var shortcutItems: [ShortcutAction: NSMenuItem] = [:]
+    private var shortcutIDs: [UInt32] = []
+    private var shortcutsSuspended = false
     private let selection = SelectionController()
     private let thumbnails = ThumbnailManager()
     private var editors: [EditorController] = []
@@ -35,16 +33,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         HistoryController.shared.onRestore = { [weak self] entry in self?.restore(entry) }
         buildStatusItem()
 
-        // ⌃⇧ + número: siempre disponibles.
-        let hotKeys: [(Int, () -> Void)] = [
-            (kVK_ANSI_4, { [weak self] in self?.captureArea() }),
-            (kVK_ANSI_3, { [weak self] in self?.captureFullScreen() }),
-            (kVK_ANSI_2, { [weak self] in self?.captureText() }),
-            (kVK_ANSI_5, { [weak self] in self?.repeatLastArea() }),
-        ]
-        for (keyCode, handler) in hotKeys {
-            HotKeyCenter.shared.register(keyCode: keyCode, modifiers: controlKey | shiftKey, handler: handler)
+        SettingsController.shared.onSystemShortcutsChanged = { [weak self] in self?.syncSystemShortcuts() }
+        SettingsController.shared.onError = { [weak self] in self?.thumbnailReport(error: $0) }
+        CommandPaletteController.shared.commands = { [weak self] in self?.commands() ?? [] }
+        ShortcutStore.onChange = { [weak self] in
+            self?.registerShortcuts()
+            WelcomeController.shared.refresh()
         }
+        ShortcutStore.onRecording = { [weak self] recording in
+            self?.shortcutsSuspended = recording
+            self?.registerShortcuts()
+            self?.syncSystemShortcuts()
+        }
+        registerShortcuts()
         // ⌘⇧3/4 solo se toman cuando macOS los ha soltado; si no, se dispararían los dos a la vez.
         syncSystemShortcuts()
         shortcutTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -57,9 +58,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         }
     }
 
+    private func perform(_ action: ShortcutAction) {
+        switch action {
+        case .area: captureArea()
+        case .window: captureWindowMode()
+        case .fullScreen: captureFullScreen()
+        case .text: captureText()
+        case .repeatArea: repeatLastArea()
+        case .palette: CommandPaletteController.shared.toggle()
+        }
+    }
+
+    /// Registra los atajos elegidos en Ajustes; mientras se graba uno nuevo, no hay ninguno activo.
+    private func registerShortcuts() {
+        for id in shortcutIDs { HotKeyCenter.shared.unregister(id) }
+        shortcutIDs = []
+        guard !shortcutsSuspended else { return }
+        for action in ShortcutAction.allCases {
+            guard let shortcut = ShortcutStore.shortcut(for: action) else { continue }
+            let id = HotKeyCenter.shared.register(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [weak self] in
+                self?.perform(action)
+            }
+            if let id { shortcutIDs.append(id) }
+        }
+    }
+
     /// Registra o suelta ⌘⇧3/4 según estén o no activos los atajos nativos de macOS.
     private func syncSystemShortcuts() {
-        let shouldOwn = !SystemShortcuts.nativeScreenshotsEnabled
+        let shouldOwn = !SystemShortcuts.nativeScreenshotsEnabled && !shortcutsSuspended
         guard shouldOwn != !commandShortcutIDs.isEmpty else { return }
         if shouldOwn {
             let area = HotKeyCenter.shared.register(keyCode: kVK_ANSI_4, modifiers: cmdKey | shiftKey) { [weak self] in
@@ -85,20 +111,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         let menu = NSMenu()
         menu.delegate = self
 
-        func add(_ title: String, _ symbol: String, _ action: Selector?, key: String = "",
-                 to target: NSMenu) -> NSMenuItem {
-            let item = target.addItem(withTitle: title, action: action, keyEquivalent: key)
+        func add(_ title: String, _ symbol: String, _ action: Selector?, to target: NSMenu,
+                 shortcut: ShortcutAction? = nil) -> NSMenuItem {
+            let item = target.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self
             item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-            if !key.isEmpty { item.keyEquivalentModifierMask = [.control, .shift] }
+            if let shortcut { shortcutItems[shortcut] = item }
             return item
         }
 
-        areaItem = add("Capturar área", "rectangle.dashed", #selector(captureArea), key: "4", to: menu)
-        _ = add("Capturar ventana", "macwindow", #selector(captureWindowMode), to: menu)
-        fullItem = add("Capturar pantalla completa", "display", #selector(captureFullScreen), key: "3", to: menu)
-        _ = add("Copiar texto de la pantalla", "text.viewfinder", #selector(captureText), key: "2", to: menu)
-        repeatItem = add("Repetir última área", "arrow.clockwise", #selector(repeatLastArea), key: "5", to: menu)
+        areaItem = add("Capturar área", "rectangle.dashed", #selector(captureArea), to: menu, shortcut: .area)
+        _ = add("Capturar ventana", "macwindow", #selector(captureWindowMode), to: menu, shortcut: .window)
+        fullItem = add("Capturar pantalla completa", "display", #selector(captureFullScreen), to: menu,
+                       shortcut: .fullScreen)
+        _ = add("Copiar texto de la pantalla", "text.viewfinder", #selector(captureText), to: menu, shortcut: .text)
+        repeatItem = add("Repetir última área", "arrow.clockwise", #selector(repeatLastArea), to: menu,
+                         shortcut: .repeatArea)
 
         let timerItem = add("Capturar con temporizador", "timer", nil, to: menu)
         let timerMenu = NSMenu()
@@ -109,24 +137,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         timerItem.submenu = timerMenu
 
         menu.addItem(.separator())
+        _ = add("Paleta de comandos…", "command", #selector(showPalette), to: menu, shortcut: .palette)
         _ = add("Historial de capturas…", "clock.arrow.circlepath", #selector(showHistory), to: menu)
         _ = add("Abrir carpeta de capturas", "folder", #selector(openSaveFolder), to: menu)
         menu.addItem(.separator())
-
-        let settingsItem = add("Ajustes", "gearshape", nil, to: menu)
-        let settings = NSMenu()
-        settings.delegate = self
-        overrideItem = add("Sustituir ⌘⇧3 y ⌘⇧4 de macOS", "command", #selector(toggleSystemOverride), to: settings)
-        loginItem = add("Abrir al iniciar sesión", "power", #selector(toggleLoginItem), to: settings)
-        settings.addItem(.separator())
-        loupeItem = add("Lupa al seleccionar", "magnifyingglass", #selector(toggleLoupe), to: settings)
-        iconsItem = add("Ocultar los iconos del escritorio", "eye.slash", #selector(toggleDesktopIcons), to: settings)
-        shadowItem = add("Sombra en las capturas de ventana", "shadow", #selector(toggleWindowShadow), to: settings)
-        settings.addItem(.separator())
-        _ = add("Cambiar carpeta de guardado…", "folder.badge.gearshape", #selector(chooseSaveFolder), to: settings)
-        settingsItem.submenu = settings
-
-        _ = add("Atajos y permisos…", "keyboard", #selector(showWelcome), to: menu)
+        let settings = add("Ajustes…", "gearshape", #selector(showSettings), to: menu)
+        settings.keyEquivalent = ","
+        settings.keyEquivalentModifierMask = [.command]
+        _ = add("Permisos y bienvenida…", "hand.raised", #selector(showWelcome), to: menu)
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "Salir de Lince", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
@@ -134,18 +152,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     }
 
     func menuWillOpen(_ menu: NSMenu) {
-        // El menú enseña el atajo que de verdad funciona ahora mismo.
+        // El menú enseña los atajos que de verdad funcionan ahora mismo.
         syncSystemShortcuts()
-        let native = SystemShortcuts.nativeScreenshotsEnabled
-        let modifiers: NSEvent.ModifierFlags = native ? [.control, .shift] : [.command, .shift]
-        areaItem.keyEquivalentModifierMask = modifiers
-        fullItem.keyEquivalentModifierMask = modifiers
+        for (action, item) in shortcutItems {
+            let shortcut = ShortcutStore.shortcut(for: action)
+            item.keyEquivalent = shortcut?.menuKey ?? ""
+            item.keyEquivalentModifierMask = shortcut?.menuModifiers ?? []
+        }
+        if !SystemShortcuts.nativeScreenshotsEnabled {
+            // Con los de macOS sustituidos, se muestran ⌘⇧4 y ⌘⇧3, que son los que la gente recuerda.
+            for (item, key) in [(areaItem, "4"), (fullItem, "3")] {
+                item?.keyEquivalent = key
+                item?.keyEquivalentModifierMask = [.command, .shift]
+            }
+        }
         repeatItem.isEnabled = Settings.lastArea != nil
-        overrideItem.state = native ? .off : .on
-        loupeItem.state = Settings.showsLoupe ? .on : .off
-        iconsItem.state = Settings.hidesDesktopIcons ? .on : .off
-        shadowItem.state = Settings.windowShadow ? .on : .off
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -156,42 +177,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         NSWorkspace.shared.open(Settings.saveDirectory)
     }
 
-    @objc private func chooseSaveFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = Settings.saveDirectory
-        panel.prompt = "Elegir"
-        NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url {
-            Settings.saveDirectory = url
-        }
-    }
+    @objc private func showSettings() { SettingsController.shared.show() }
+    @objc private func showPalette() { CommandPaletteController.shared.show() }
 
-    @objc private func toggleSystemOverride() {
-        // Si macOS los tiene activos se los quitamos; si ya son de Lince, se los devolvemos.
-        let giveBack = !SystemShortcuts.nativeScreenshotsEnabled
-        if !SystemShortcuts.setNativeScreenshots(enabled: giveBack) {
-            WelcomeController.shared.show()
-        }
-        syncSystemShortcuts()
-    }
+    // MARK: - Paleta de comandos
 
-    @objc private func toggleLoupe() { Settings.showsLoupe.toggle() }
-    @objc private func toggleDesktopIcons() { Settings.hidesDesktopIcons.toggle() }
-    @objc private func toggleWindowShadow() { Settings.windowShadow.toggle() }
-
-    @objc private func toggleLoginItem() {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
-            }
-        } catch {
-            thumbnailReport(error: error)
+    /// Todas las acciones de Lince, con el atajo que tengan ahora mismo.
+    private func commands() -> [Command] {
+        func keys(_ action: ShortcutAction) -> [String] { ShortcutStore.shortcut(for: action)?.keys ?? [] }
+        var list = [
+            Command(title: "Capturar área", symbol: "rectangle.dashed", keywords: "seleccion recorte zona",
+                    keys: keys(.area)) { [weak self] in self?.captureArea() },
+            Command(title: "Capturar ventana", symbol: "macwindow", keywords: "app aplicacion",
+                    keys: keys(.window)) { [weak self] in self?.captureWindowMode() },
+            Command(title: "Capturar pantalla completa", symbol: "display", keywords: "entera monitor todo",
+                    keys: keys(.fullScreen)) { [weak self] in self?.captureFullScreen() },
+            Command(title: "Copiar texto de la pantalla", symbol: "text.viewfinder", keywords: "ocr leer reconocer",
+                    keys: keys(.text)) { [weak self] in self?.captureText() },
+        ]
+        if Settings.lastArea != nil {
+            list.append(Command(title: "Repetir última área", symbol: "arrow.clockwise", keywords: "otra vez misma",
+                                keys: keys(.repeatArea)) { [weak self] in self?.repeatLastArea() })
         }
+        for seconds in [3, 5, 10] {
+            list.append(Command(title: "Capturar en \(seconds) segundos", symbol: "timer",
+                                keywords: "temporizador cuenta atras retardo") { [weak self] in
+                self?.startSelection(.timer(seconds))
+            })
+        }
+        if let last = HistoryStore.shared.entries.first {
+            list.append(Command(title: "Copiar la última captura", symbol: "doc.on.doc",
+                                keywords: "portapapeles reciente") {
+                guard let image = HistoryStore.shared.image(for: last.id) else { return }
+                Capture.copy(image: image, png: Capture.encodePNG(image, scale: CGFloat(last.scale)))
+                Toast.show("Copiada", symbol: "checkmark", on: NSScreen.underMouse)
+            })
+            list.append(Command(title: "Recuperar la última captura", symbol: "arrow.uturn.backward",
+                                keywords: "miniatura volver reciente") { [weak self] in self?.restore(last) })
+        }
+        list += [
+            Command(title: "Historial de capturas", symbol: "clock.arrow.circlepath", keywords: "anteriores recientes") {
+                HistoryController.shared.show()
+            },
+            Command(title: "Abrir carpeta de capturas", symbol: "folder", keywords: "finder guardadas archivos") {
+                NSWorkspace.shared.open(Settings.saveDirectory)
+            },
+            Command(title: "Cerrar todas las miniaturas", symbol: "xmark.circle", keywords: "limpiar bandeja descartar") {
+                [weak self] in self?.thumbnails.dismissAll()
+            },
+            Command(title: "Ajustes", symbol: "gearshape", keywords: "preferencias opciones configuracion") {
+                SettingsController.shared.show()
+            },
+            Command(title: "Cambiar atajos de teclado", symbol: "keyboard", keywords: "teclas combinacion") {
+                SettingsController.shared.show(tab: 2)
+            },
+            Command(title: "Permisos y bienvenida", symbol: "hand.raised", keywords: "grabacion pantalla ayuda") {
+                WelcomeController.shared.show()
+            },
+            Command(title: "Salir de Lince", symbol: "power", keywords: "cerrar terminar") { NSApp.terminate(nil) },
+        ]
+        return list
     }
 
     @objc private func showWelcome() { WelcomeController.shared.show() }
@@ -328,7 +373,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     }
 
     private func present(_ shot: ScreenShot, from source: CGRect, hasTransparency: Bool = false) {
-        playShutter()
+        Shutter.play()
+        statusItem.blink()
         let capture = Capture(image: shot.image, scale: shot.scale)
         capture.sourceRect = source
         capture.hasTransparency = hasTransparency
@@ -350,16 +396,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         let capture = Capture(image: image, scale: CGFloat(entry.scale), id: entry.id)
         capture.hasTransparency = entry.hasTransparency
         thumbnails.add(capture, on: screen, from: nil)
-    }
-
-    private lazy var shutterSound: NSSound? = {
-        let path = "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/Screen Capture.aif"
-        return NSSound(contentsOfFile: path, byReference: true)
-    }()
-
-    private func playShutter() {
-        shutterSound?.stop()
-        shutterSound?.play()
     }
 
     // MARK: - Acciones de la miniatura

@@ -10,18 +10,6 @@ final class PreviewController {
     private var sourceFrame: (() -> CGRect?)?
     private var clickMonitor: Any?
 
-    /// Escala máxima a la que se amplía una captura pequeña.
-    static let maxUpscale: CGFloat = 3
-
-    /// Tamaño en puntos con el que se muestra una captura en un área disponible.
-    /// Las grandes se reducen para caber; las pequeñas se amplían hasta `maxUpscale`.
-    static func displaySize(for pointSize: CGSize, in available: CGSize) -> CGSize {
-        guard pointSize.width > 0, pointSize.height > 0 else { return .zero }
-        let fit = min(available.width / pointSize.width, available.height / pointSize.height)
-        let factor = min(fit, maxUpscale)
-        return CGSize(width: (pointSize.width * factor).rounded(), height: (pointSize.height * factor).rounded())
-    }
-
     /// Muestra la captura, o la cierra si ya era la que estaba a la vista.
     /// `sourceFrame` devuelve, en coordenadas de pantalla, de dónde sale y adónde vuelve.
     func toggle(_ capture: Capture, on screen: NSScreen, sourceFrame: @escaping () -> CGRect?) {
@@ -48,6 +36,7 @@ final class PreviewController {
         panel.onDismiss = { [weak self] in self?.close(animated: true) }
 
         let view = PreviewView(frame: CGRect(origin: .zero, size: screen.frame.size),
+                               visible: screen.visibleFrame.size,
                                image: capture.image, pointSize: capture.pointSize)
         view.onDismiss = { [weak self] in self?.close(animated: true) }
         panel.contentView = view
@@ -112,15 +101,17 @@ final class PreviewView: NSView {
     private let pill = NSVisualEffectView()
     private let label = NSTextField(labelWithString: "")
     private let pointSize: CGSize
+    /// Tamaño útil de la pantalla, sin la barra de menús ni el Dock.
+    private let visible: CGSize
     private var targetFrame: CGRect = .zero
     private var closing = false
 
-    private static let margin: CGFloat = 64
     private static let pillGap: CGFloat = 14
     private static let pillHeight: CGFloat = 26
 
-    init(frame: CGRect, image: CGImage, pointSize: CGSize) {
+    init(frame: CGRect, visible: CGSize, image: CGImage, pointSize: CGSize) {
         self.pointSize = pointSize
+        self.visible = visible
         super.init(frame: frame)
         wantsLayer = true
 
@@ -185,9 +176,7 @@ final class PreviewView: NSView {
 
     private func layoutContent() {
         let reserved = Self.pillGap + Self.pillHeight
-        let available = CGSize(width: max(bounds.width - Self.margin * 2, 100),
-                               height: max(bounds.height - Self.margin * 2 - reserved, 100))
-        let size = PreviewController.displaySize(for: pointSize, in: available)
+        let size = EditorController.imageSize(for: pointSize, visible: visible)
         targetFrame = CGRect(x: ((bounds.width - size.width) / 2).rounded(),
                              y: ((bounds.height - size.height + reserved) / 2).rounded(),
                              width: size.width, height: size.height)

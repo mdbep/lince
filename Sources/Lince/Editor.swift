@@ -37,11 +37,16 @@ final class AnnotationView: NSView, NSTextFieldDelegate {
 
     private enum Drag {
         case none
-        case move(last: CGPoint)
+        /// Mover: dónde empezó el arrastre y cómo era la anotación entonces.
+        case move(start: CGPoint, original: Annotation)
         case handle(point: Int)
     }
     private var drag = Drag.none
     private var dragDidChange = false
+    /// Guías de alineación visibles mientras se mueve una anotación, en coordenadas de imagen.
+    private var alignGuides: [(CGPoint, CGPoint)] = [] {
+        didSet { if !(oldValue.isEmpty && alignGuides.isEmpty) { needsDisplay = true } }
+    }
 
     private var factor: CGFloat { imageSize.width > 0 ? bounds.width / imageSize.width : 1 }
     private func textFontSize(for width: CGFloat) -> CGFloat { (10 + width * 2.6) * unit }
@@ -172,6 +177,88 @@ final class AnnotationView: NSView, NSTextFieldDelegate {
         current?.draw(in: context, base: baseImage)
         context.restoreGState()
         if let selected { drawSelection(of: selected, in: context) }
+        if !alignGuides.isEmpty {
+            context.setStrokeColor(Theme.accent.cgColor)
+            context.setLineWidth(1)
+            for (from, to) in alignGuides {
+                context.move(to: CGPoint(x: (from.x * factor).rounded() + 0.5, y: (from.y * factor).rounded() + 0.5))
+                context.addLine(to: CGPoint(x: (to.x * factor).rounded() + 0.5, y: (to.y * factor).rounded() + 0.5))
+            }
+            context.strokePath()
+        }
+    }
+
+    // MARK: Alineación y confirmación
+
+    /// Ajusta un desplazamiento para que la anotación encaje con los bordes y centros
+    /// de las demás y de la imagen, y deja preparadas las guías que lo señalan.
+    private func aligned(_ delta: CGPoint, moving box: CGRect, skipping index: Int) -> CGPoint {
+        let moved = box.offsetBy(dx: delta.x, dy: delta.y)
+        var targets = [CGRect(origin: .zero, size: imageSize)]
+        for (other, annotation) in annotations.enumerated() where other != index { targets.append(annotation.bounds) }
+        let reach = 5 / factor
+        var result = delta
+        var guides: [(CGPoint, CGPoint)] = []
+        var bestX = reach, bestY = reach
+        var guideX: (CGFloat, CGRect)?, guideY: (CGFloat, CGRect)?
+        for target in targets {
+            for mine in [moved.minX, moved.midX, moved.maxX] {
+                for theirs in [target.minX, target.midX, target.maxX] where abs(theirs - mine) < bestX {
+                    bestX = abs(theirs - mine)
+                    result.x = delta.x + theirs - mine
+                    guideX = (theirs, target)
+                }
+            }
+            for mine in [moved.minY, moved.midY, moved.maxY] {
+                for theirs in [target.minY, target.midY, target.maxY] where abs(theirs - mine) < bestY {
+                    bestY = abs(theirs - mine)
+                    result.y = delta.y + theirs - mine
+                    guideY = (theirs, target)
+                }
+            }
+        }
+        let final = box.offsetBy(dx: result.x, dy: result.y)
+        if let (x, target) = guideX {
+            guides.append((CGPoint(x: x, y: min(final.minY, target.minY)), CGPoint(x: x, y: max(final.maxY, target.maxY))))
+        }
+        if let (y, target) = guideY {
+            guides.append((CGPoint(x: min(final.minX, target.minX), y: y), CGPoint(x: max(final.maxX, target.maxX), y: y)))
+        }
+        if guides.count > alignGuides.count {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+        alignGuides = guides
+        return result
+    }
+
+    /// Un anillo que se abre y se apaga alrededor de lo recién dibujado.
+    private func pulse(_ annotation: Annotation) {
+        guard !Theme.reduceMotion, let layer else { return }
+        let box = annotation.bounds.applying(CGAffineTransform(scaleX: factor, y: factor)).insetBy(dx: -6, dy: -6)
+        guard box.width < bounds.width * 1.5, box.height < bounds.height * 1.5 else { return }
+        let ring = CALayer()
+        ring.frame = box
+        ring.cornerRadius = annotation.tool == .counter || annotation.tool == .ellipse ? min(box.width, box.height) / 2 : 7
+        ring.cornerCurve = .continuous
+        ring.borderWidth = 2
+        ring.borderColor = annotation.color.cgColor
+        ring.opacity = 0
+        layer.addSublayer(ring)
+
+        let grow = CABasicAnimation(keyPath: "transform.scale")
+        grow.fromValue = 0.96
+        grow.toValue = 1.1
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.85
+        fade.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [grow, fade]
+        group.duration = 0.38
+        group.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
+        ring.add(group, forKey: "pulse")
+        CATransaction.commit()
     }
 
     /// Tiradores de la anotación, en coordenadas de imagen.
@@ -299,11 +386,11 @@ final class AnnotationView: NSView, NSTextFieldDelegate {
         let hit = annotationIndex(at: point)
         if tool == .select {
             selectedIndex = hit
-            if hit != nil { drag = .move(last: point) }
+            if let hit { drag = .move(start: point, original: annotations[hit]) }
             return
         }
         if let hit, hit == selectedIndex {
-            drag = .move(last: point)
+            drag = .move(start: point, original: annotations[hit])
             return
         }
 
@@ -316,9 +403,11 @@ final class AnnotationView: NSView, NSTextFieldDelegate {
             beginText(at: convert(event.locationInWindow, from: nil))
         case .counter:
             let number = annotations.filter { $0.tool == .counter }.count + 1
-            add(Annotation(tool: .counter, points: [point], color: color,
-                           width: strokeWidth * unit, unit: unit, text: "\(number)"), select: true)
-            drag = .move(last: point)
+            let counter = Annotation(tool: .counter, points: [point], color: color,
+                                     width: strokeWidth * unit, unit: unit, text: "\(number)")
+            add(counter, select: true)
+            pulse(counter)
+            drag = .move(start: point, original: counter)
             dragDidChange = true
         default:
             current = Annotation(tool: tool, points: [point, point], color: color,
@@ -331,14 +420,22 @@ final class AnnotationView: NSView, NSTextFieldDelegate {
         var point = imagePoint(event)
 
         switch drag {
-        case .move(let last):
+        case .move(let start, let original):
             guard let selectedIndex, annotations.indices.contains(selectedIndex) else { return }
             if !dragDidChange {
                 checkpoint()
                 dragDidChange = true
             }
-            annotations[selectedIndex].translate(dx: point.x - last.x, dy: point.y - last.y)
-            drag = .move(last: point)
+            var delta = CGPoint(x: point.x - start.x, y: point.y - start.y)
+            // Con ⌘ se mueve libre, sin encajar con nada.
+            if event.modifierFlags.contains(.command) {
+                alignGuides = []
+            } else {
+                delta = aligned(delta, moving: original.bounds, skipping: selectedIndex)
+            }
+            var moved = original
+            moved.translate(dx: delta.x, dy: delta.y)
+            annotations[selectedIndex] = moved
             return
         case .handle(let index):
             guard let selectedIndex, annotations.indices.contains(selectedIndex) else { return }
@@ -377,6 +474,7 @@ final class AnnotationView: NSView, NSTextFieldDelegate {
                 refreshPixelCache(at: selectedIndex)
             }
             drag = .none
+            alignGuides = []
             return
         }
         guard var annotation = current else { return }
@@ -388,6 +486,7 @@ final class AnnotationView: NSView, NSTextFieldDelegate {
             }
             // Lo recién dibujado queda seleccionado para poder retocarlo al momento.
             add(annotation, select: !annotation.tool.isFreehand)
+            pulse(annotation)
         }
         needsDisplay = true
     }
@@ -517,7 +616,7 @@ final class CanvasView: NSView {
         let available = CGRect(x: insets.left, y: insets.bottom,
                                width: max(bounds.width - insets.left - insets.right, 10),
                                height: max(bounds.height - insets.top - insets.bottom, 10))
-        let pad = backdrop.map { Backdrop.padding(for: imageSize, level: $0.padding) } ?? 0
+        let pad = backdrop.map { Backdrop.padding(for: imageSize, fraction: $0.padding) } ?? 0
         let total = CGSize(width: imageSize.width + pad * 2, height: imageSize.height + pad * 2)
         let ratio = min(available.width / total.width, available.height / total.height)
         let size = CGSize(width: floor(imageSize.width * ratio), height: floor(imageSize.height * ratio))
@@ -531,11 +630,11 @@ final class CanvasView: NSView {
             backdropHost.isHidden = backdrop == nil
             backdropHost.frame = outerFrame
             gradient.frame = backdropHost.bounds
-            if let backdrop { gradient.colors = Backdrop.styles[backdrop.style].cgColors }
+            if let backdrop { gradient.colors = Backdrop.colors(for: backdrop) }
 
             // Lo que se ve aquí debe coincidir con la imagen final que compone `Backdrop.compose`.
             let framed = backdrop != nil && !hasTransparency
-            let radius = framed ? Backdrop.cornerRadius(unit: unit) * ratio : 0
+            let radius = framed ? min((backdrop?.radius ?? 0) * unit * ratio, min(size.width, size.height) / 2) : 0
             imageHost.frame = frame
             imageHost.layer?.cornerRadius = radius
             annotationView.frame = frame
@@ -546,7 +645,7 @@ final class CanvasView: NSView {
             shadowHost.layer?.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: size),
                                                   cornerWidth: radius, cornerHeight: radius, transform: nil)
             if framed {
-                shadowHost.layer?.shadowOpacity = Float(Backdrop.shadowOpacity)
+                shadowHost.layer?.shadowOpacity = Float(backdrop?.shadowOpacity ?? 0)
                 shadowHost.layer?.shadowRadius = Backdrop.shadowBlur(unit: unit) * ratio / 2
                 shadowHost.layer?.shadowOffset = CGSize(width: 0, height: Backdrop.shadowOffset(unit: unit) * ratio)
             } else {
@@ -700,12 +799,15 @@ final class EditorController: NSObject, NSWindowDelegate {
     private var redoButton: HoverButton!
     private var copyButton: HoverButton!
     private var backdropButton: HoverButton!
+    private var topBarHeight: NSLayoutConstraint!
+    private var brandLeading: NSLayoutConstraint!
     private var backdropPopover: NSPopover?
-    private var backdropSwatches: [BackdropSwatch] = []
-    private var paddingButtons: [HoverButton] = []
-    private var paddingLevel = 1
+    /// Últimos ajustes de fondo usados; se recuerdan entre capturas.
+    private var backdropOptions = Settings.backdropOptions
+    private lazy var autoBackdropColors = Backdrop.autoColors(for: capture.image)
 
-    private let colors: [NSColor] = [
+    /// Colores fijos de la paleta; detrás se añaden los sugeridos a partir de la captura.
+    private var colors: [NSColor] = [
         NSColor(srgbRed: 1.00, green: 0.23, blue: 0.19, alpha: 1),
         Theme.accent,
         NSColor(srgbRed: 1.00, green: 0.80, blue: 0.00, alpha: 1),
@@ -716,17 +818,28 @@ final class EditorController: NSObject, NSWindowDelegate {
         .white,
     ]
     private let widths: [CGFloat] = [2.5, 4, 7]
+    private var suggestedCount = 0
+
+    private static let chrome = CGSize(width: 56, height: 168)
+
+    /// Tamaño en puntos con el que se muestra una captura: el real, reducido solo si no cabe.
+    /// La vista previa usa el mismo, para que una captura se vea igual en los dos sitios.
+    static func imageSize(for pointSize: CGSize, visible: CGSize) -> CGSize {
+        guard pointSize.width > 0, pointSize.height > 0 else { return .zero }
+        let maxSize = CGSize(width: visible.width * 0.82 - chrome.width, height: visible.height * 0.86 - chrome.height)
+        let ratio = min(maxSize.width / pointSize.width, maxSize.height / pointSize.height, 1)
+        return CGSize(width: (pointSize.width * ratio).rounded(), height: (pointSize.height * ratio).rounded())
+    }
 
     init(capture: Capture) {
         self.capture = capture
         let screen = NSScreen.underMouse.visibleFrame
-        let chrome = CGSize(width: 56, height: 168)
+        let chrome = EditorController.chrome
         canvas.unit = capture.scale
         canvas.hasTransparency = capture.hasTransparency
-        let maxSize = CGSize(width: screen.width * 0.82 - chrome.width, height: screen.height * 0.86 - chrome.height)
-        let ratio = min(maxSize.width / capture.pointSize.width, maxSize.height / capture.pointSize.height, 1)
-        let content = CGSize(width: max(800, capture.pointSize.width * ratio + chrome.width),
-                             height: max(500, capture.pointSize.height * ratio + chrome.height))
+        let shown = EditorController.imageSize(for: capture.pointSize, visible: screen.size)
+        let content = CGSize(width: max(800, shown.width + chrome.width),
+                             height: max(500, shown.height + chrome.height))
         window = EditorWindow(contentRect: CGRect(origin: .zero, size: content),
                               styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
@@ -741,7 +854,15 @@ final class EditorController: NSObject, NSWindowDelegate {
         window.backgroundColor = Theme.canvas
         window.isMovableByWindowBackground = true
         window.minSize = CGSize(width: 800, height: 460)
+        // Una barra de herramientas vacía da a la ventana las esquinas amplias del sistema
+        // y centra los botones de cerrar, minimizar y ampliar en una barra más alta.
+        let toolbar = NSToolbar(identifier: "LinceEditor")
+        toolbar.showsBaselineSeparator = false
+        toolbar.allowsUserCustomization = false
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
         buildContent()
+        alignTitleBar()
         canvas.setImage(capture.image)
         canvas.annotationView.unit = capture.scale
         canvas.annotationView.onToolKey = { [weak self] tool in self?.select(tool: tool) }
@@ -759,6 +880,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(canvas.annotationView)
+        alignTitleBar()
     }
 
     // MARK: Construcción
@@ -773,6 +895,7 @@ final class EditorController: NSObject, NSWindowDelegate {
         let palette = buildPalette()
         root.addSubview(palette)
 
+        topBarHeight = topBar.heightAnchor.constraint(equalToConstant: 52)
         NSLayoutConstraint.activate([
             canvas.topAnchor.constraint(equalTo: root.topAnchor),
             canvas.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -781,12 +904,29 @@ final class EditorController: NSObject, NSWindowDelegate {
             topBar.topAnchor.constraint(equalTo: root.topAnchor),
             topBar.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             topBar.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            topBar.heightAnchor.constraint(equalToConstant: 52),
+            topBarHeight,
             palette.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             palette.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
             palette.heightAnchor.constraint(equalToConstant: 48),
         ])
         window.contentView = root
+    }
+
+    /// Ajusta la barra propia a la del sistema: misma altura, y la marca justo después de los botones.
+    func alignTitleBar() {
+        let titleBar = window.frame.height - window.contentLayoutRect.height
+        let height = max(52, titleBar.rounded())
+        if topBarHeight.constant != height {
+            topBarHeight.constant = height
+            canvas.insets.top = height + 24
+            canvas.needsLayout = true
+        }
+        var leading: CGFloat = 18
+        if !window.styleMask.contains(.fullScreen), let zoom = window.standardWindowButton(.zoomButton),
+           let host = zoom.superview, !zoom.isHidden {
+            leading = host.convert(zoom.frame, to: nil).maxX + 14
+        }
+        if brandLeading.constant != leading { brandLeading.constant = leading }
     }
 
     private func buildTopBar() -> NSView {
@@ -849,6 +989,19 @@ final class EditorController: NSObject, NSWindowDelegate {
         actions.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(actions)
 
+        let logo = NSImageView()
+        logo.image = NSApp.applicationIconImage
+        logo.imageScaling = .scaleProportionallyUpOrDown
+        let wordmark = NSTextField(labelWithString: "Lince")
+        wordmark.font = .systemFont(ofSize: 15, weight: .semibold)
+        wordmark.textColor = Theme.accent
+        let brand = NSStackView(views: [logo, wordmark])
+        brand.spacing = 7
+        brand.translatesAutoresizingMaskIntoConstraints = false
+        brand.setContentCompressionResistancePriority(.required, for: .horizontal)
+        bar.addSubview(brand)
+        brandLeading = brand.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 84)
+
         let titleCenter = titles.centerXAnchor.constraint(equalTo: bar.centerXAnchor)
         titleCenter.priority = .defaultLow
         NSLayoutConstraint.activate([
@@ -857,7 +1010,11 @@ final class EditorController: NSObject, NSWindowDelegate {
             line.bottomAnchor.constraint(equalTo: bar.bottomAnchor),
             line.heightAnchor.constraint(equalToConstant: 1),
             titleCenter,
-            titles.leadingAnchor.constraint(greaterThanOrEqualTo: bar.leadingAnchor, constant: 84),
+            brandLeading,
+            brand.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+            logo.widthAnchor.constraint(equalToConstant: 22),
+            logo.heightAnchor.constraint(equalToConstant: 22),
+            titles.leadingAnchor.constraint(greaterThanOrEqualTo: brand.trailingAnchor, constant: 16),
             titles.trailingAnchor.constraint(lessThanOrEqualTo: actions.leadingAnchor, constant: -16),
             titles.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
             actions.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -12),
@@ -893,13 +1050,29 @@ final class EditorController: NSObject, NSWindowDelegate {
         let toolStack = NSStackView(views: toolButtons)
         toolStack.spacing = 2
 
+        // Dos colores sacados de la captura: uno que combina con ella y otro que destaca sobre ella.
+        let fixedCount = colors.count
+        let suggested = Backdrop.suggestedColors(for: capture.image)
+        colors += suggested
+        suggestedCount = suggested.count
+        let hints = ["A juego con la captura", "Contraste con la captura"]
         swatches = colors.enumerated().map { index, color in
             let swatch = SwatchView(color: color)
+            if index >= fixedCount { swatch.toolTip = hints[min(index - fixedCount, hints.count - 1)] }
             swatch.onClick = { [weak self] in self?.select(colorIndex: index) }
             return swatch
         }
         let colorStack = NSStackView(views: swatches)
         colorStack.spacing = 0
+        if !suggested.isEmpty {
+            let spark = NSImageView()
+            spark.image = Theme.symbol("sparkles", size: 9, weight: .medium)
+            spark.contentTintColor = NSColor.white.withAlphaComponent(0.4)
+            spark.toolTip = "Colores sugeridos a partir de la captura"
+            colorStack.insertArrangedSubview(spark, at: fixedCount)
+            colorStack.setCustomSpacing(5, after: swatches[fixedCount - 1])
+            colorStack.setCustomSpacing(2, after: spark)
+        }
 
         let labels = ["Fino", "Medio", "Grueso"]
         widthButtons = widths.enumerated().map { index, _ in
@@ -946,7 +1119,8 @@ final class EditorController: NSObject, NSWindowDelegate {
     private func select(colorIndex: Int) {
         for (index, swatch) in swatches.enumerated() { swatch.isSelected = index == colorIndex }
         canvas.annotationView.apply(color: colors[colorIndex])
-        Settings.editorColor = colorIndex
+        // Los sugeridos cambian con cada captura: solo se recuerda la elección entre los fijos.
+        if colorIndex < colors.count - suggestedCount { Settings.editorColor = colorIndex }
     }
 
     private func select(widthIndex: Int) {
@@ -987,62 +1161,31 @@ final class EditorController: NSObject, NSWindowDelegate {
             backdropPopover.close()
             return
         }
-        backdropSwatches = [BackdropSwatch(style: nil)] + Backdrop.styles.map { BackdropSwatch(style: $0) }
-        for (index, swatch) in backdropSwatches.enumerated() {
-            swatch.onClick = { [weak self] in self?.selectBackdrop(index == 0 ? nil : index - 1) }
-        }
-        let swatchRow = NSStackView(views: backdropSwatches)
-        swatchRow.spacing = 2
-
-        let label = NSTextField(labelWithString: "Margen")
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.textColor = NSColor.white.withAlphaComponent(0.6)
-        paddingButtons = ["Pequeño", "Medio", "Grande"].enumerated().map { index, title in
-            let button = HoverButton(title: title, fontSize: 11.5, padding: 10, height: 24)
-            button.cornerRadius = nil
-            button.normalColor = NSColor.white.withAlphaComponent(0.08)
-            button.onClick = { [weak self] in self?.selectPadding(index) }
-            return button
-        }
-        let paddingRow = NSStackView(views: [label] + paddingButtons)
-        paddingRow.spacing = 6
-        paddingRow.setCustomSpacing(12, after: label)
-
-        let stack = NSStackView(views: [swatchRow, paddingRow])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
+        // El degradado automático se calcula una vez por captura y se reutiliza.
+        var options = backdropOptions
+        if options.auto != nil { options.auto = autoBackdropColors }
+        let panel = BackdropPanel(current: canvas.backdrop, options: options,
+                                  ownsShape: capture.hasTransparency, autoColors: autoBackdropColors)
+        panel.onChange = { [weak self] in self?.setBackdrop($0) }
         let controller = NSViewController()
-        controller.view = stack
+        controller.view = panel
+        controller.preferredContentSize = panel.fittingSize
 
         let popover = NSPopover()
         popover.behavior = .transient
         popover.appearance = NSAppearance(named: .darkAqua)
         popover.contentViewController = controller
         backdropPopover = popover
-        refreshBackdropPicker()
         popover.show(relativeTo: backdropButton.bounds, of: backdropButton, preferredEdge: .maxY)
     }
 
-    private func selectBackdrop(_ style: Int?) {
-        canvas.backdrop = style.map { BackdropChoice(style: $0, padding: paddingLevel) }
-        backdropButton.isSelected = style != nil
-        refreshBackdropPicker()
-    }
-
-    private func selectPadding(_ level: Int) {
-        paddingLevel = level
-        if let current = canvas.backdrop {
-            canvas.backdrop = BackdropChoice(style: current.style, padding: level)
+    private func setBackdrop(_ choice: BackdropChoice?) {
+        canvas.backdrop = choice
+        backdropButton.isSelected = choice != nil
+        if let choice, choice != backdropOptions {
+            backdropOptions = choice
+            Settings.backdropOptions = choice
         }
-        refreshBackdropPicker()
-    }
-
-    private func refreshBackdropPicker() {
-        let selected = canvas.backdrop.map { $0.style + 1 } ?? 0
-        for (index, swatch) in backdropSwatches.enumerated() { swatch.isSelected = index == selected }
-        for (index, button) in paddingButtons.enumerated() { button.isSelected = index == paddingLevel }
     }
 
     /// La imagen final: anotaciones fundidas y, si se eligió, el fondo.
@@ -1106,4 +1249,7 @@ final class EditorController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         onClose?()
     }
+
+    func windowDidEnterFullScreen(_ notification: Notification) { alignTitleBar() }
+    func windowDidExitFullScreen(_ notification: Notification) { alignTitleBar() }
 }

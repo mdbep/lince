@@ -7,11 +7,21 @@ protocol ThumbnailActions: AnyObject {
     func thumbnailReport(error: Error)
 }
 
-/// Apila las miniaturas flotantes en la esquina inferior izquierda de su pantalla.
+/// Bandeja de miniaturas en la esquina inferior izquierda de cada pantalla.
+/// En reposo forman una pila, con la más reciente delante; al pasar el ratón se despliegan.
 final class ThumbnailManager {
     weak var actions: ThumbnailActions?
     private var items: [ThumbnailController] = []
-    private let maxItems = 5
+    private let maxItems = 6
+    private var isExpanded = false
+    private var collapseTimer: Timer?
+
+    private static let margin: CGFloat = 22
+    private static let spacing: CGFloat = 12
+    /// Cuánto asoma y cuánto se estrecha cada tarjeta de detrás en la pila.
+    private static let peek: CGFloat = 8
+    private static let shrink: CGFloat = 9
+    private static let visibleDepth = 2
 
     /// `source` es el rectángulo (coordenadas globales) desde el que "vuela" la captura hasta su miniatura.
     func add(_ capture: Capture, on screen: NSScreen, from source: CGRect?) {
@@ -26,12 +36,14 @@ final class ThumbnailManager {
         controller.panel.setFrame(target, display: false)
         let reveal = { [weak controller] in
             guard let controller, !controller.isDismissed else { return }
+            controller.isRevealed = true
             controller.panel.alphaValue = 1
             controller.panel.orderFrontRegardless()
         }
         if let source, !Theme.reduceMotion {
             FlightAnimator.fly(image: capture.image, from: source, to: target, on: screen, completion: reveal)
         } else {
+            controller.isRevealed = true
             controller.panel.alphaValue = 0
             controller.panel.setFrame(target.offsetBy(dx: -30, dy: 0), display: false)
             controller.panel.orderFrontRegardless()
@@ -51,6 +63,11 @@ final class ThumbnailManager {
         items.first { $0.capture.id == id }
     }
 
+    /// Las miniaturas de una pantalla, de la más reciente a la más antigua.
+    func controllers(on screen: NSScreen) -> [ThumbnailController] {
+        items.reversed().filter { $0.screen.displayID == screen.displayID }
+    }
+
     func dismissAll() {
         for item in items { item.dismiss() }
     }
@@ -60,23 +77,71 @@ final class ThumbnailManager {
         layout(appearing: nil)
     }
 
+    // MARK: Pila y despliegue
+
+    /// El ratón ha entrado o salido de una miniatura.
+    fileprivate func hoverChanged(inside: Bool) {
+        if inside {
+            collapseTimer?.invalidate()
+            collapseTimer = nil
+            guard !isExpanded else { return }
+            isExpanded = true
+            layout(appearing: nil)
+        } else if isExpanded, collapseTimer == nil {
+            // Entre dos miniaturas hay un hueco: se espera a que el ratón salga de verdad de la bandeja.
+            let timer = Timer(timeInterval: 0.28, repeats: true) { [weak self] _ in self?.collapseIfOutside() }
+            timer.tolerance = 0.08
+            RunLoop.main.add(timer, forMode: .common)
+            collapseTimer = timer
+        }
+    }
+
+    private func collapseIfOutside() {
+        // Con un botón pulsado hay un arrastre en curso: la bandeja no se mueve.
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        let mouse = NSEvent.mouseLocation
+        let reach = -(Self.spacing + 4)
+        guard !items.contains(where: { $0.targetFrame.insetBy(dx: reach, dy: reach).contains(mouse) }) else { return }
+        collapseTimer?.invalidate()
+        collapseTimer = nil
+        isExpanded = false
+        layout(appearing: nil)
+    }
+
     private func layout(appearing: ThumbnailController?) {
-        var nextY: [CGDirectDisplayID: CGFloat] = [:]
-        // La más reciente queda abajo, las anteriores suben.
+        var groups: [CGDirectDisplayID: [ThumbnailController]] = [:]
+        var order: [CGDirectDisplayID] = []
         for controller in items.reversed() {
-            let screen = controller.screen
-            let key = screen.displayID ?? 0
-            let visible = screen.visibleFrame
-            let y = nextY[key] ?? (visible.minY + 22)
-            let size = controller.panel.frame.size
-            let frame = CGRect(x: visible.minX + 22, y: y, width: size.width, height: size.height)
-            nextY[key] = y + size.height + 12
-            controller.targetFrame = frame
-            guard controller !== appearing else { continue }
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = Theme.reduceMotion ? 0 : 0.32
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
-                controller.panel.animator().setFrame(frame, display: true)
+            let key = controller.screen.displayID ?? 0
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(controller)
+        }
+        if items.count < 2 { isExpanded = false }
+
+        for key in order {
+            guard let group = groups[key], let front = group.first else { continue }
+            let visible = front.screen.visibleFrame
+            let base = CGPoint(x: visible.minX + Self.margin, y: visible.minY + Self.margin)
+            if isExpanded || group.count == 1 {
+                // Desplegadas: la más reciente abajo, las anteriores suben.
+                var y = base.y
+                for controller in group {
+                    let size = controller.naturalSize
+                    controller.place(CGRect(x: base.x, y: y, width: size.width, height: size.height),
+                                     depth: 0, badge: 0, hidden: false, animated: controller !== appearing)
+                    y += size.height + Self.spacing
+                }
+            } else {
+                // Apiladas: las de detrás asoman por arriba, cada vez más estrechas y apagadas.
+                let size = front.naturalSize
+                for (index, controller) in group.enumerated() {
+                    let depth = min(index, Self.visibleDepth)
+                    let inset = CGFloat(depth) * Self.shrink
+                    let frame = CGRect(x: base.x + inset, y: base.y + CGFloat(depth) * Self.peek,
+                                       width: size.width - inset * 2, height: size.height)
+                    controller.place(frame, depth: depth, badge: index == 0 ? group.count : 0,
+                                     hidden: index > Self.visibleDepth, animated: controller !== appearing)
+                }
             }
         }
     }
@@ -122,8 +187,22 @@ enum FlightAnimator {
         flash.frame = start
         flash.opacity = 0
 
+        // Un trazo naranja recorre el borde del área capturada, como una mirada que la repasa.
+        let trace = CAShapeLayer()
+        trace.path = CGPath(rect: start.insetBy(dx: 1.5, dy: 1.5), transform: nil)
+        trace.fillColor = nil
+        trace.strokeColor = Theme.accent.cgColor
+        trace.lineWidth = 3
+        trace.lineCap = .round
+        trace.shadowColor = Theme.accent.cgColor
+        trace.shadowOpacity = 1
+        trace.shadowRadius = 6
+        trace.shadowOffset = .zero
+        trace.strokeEnd = 0
+
         view.layer?.addSublayer(card)
         view.layer?.addSublayer(flash)
+        view.layer?.addSublayer(trace)
         windows.append(window)
         window.orderFrontRegardless()
 
@@ -159,11 +238,30 @@ enum FlightAnimator {
         card.add(group, forKey: "flight")
 
         let flashFade = CABasicAnimation(keyPath: "opacity")
-        flashFade.fromValue = 0.5
+        flashFade.fromValue = 0.4
         flashFade.toValue = 0
         flashFade.duration = 0.32
         flashFade.timingFunction = CAMediaTimingFunction(name: .easeOut)
         flash.add(flashFade, forKey: "flash")
+
+        // La cabeza del trazo da la vuelta y la cola la sigue un instante después.
+        let lap: CFTimeInterval = 0.4, lag: CFTimeInterval = 0.13
+        let head = CABasicAnimation(keyPath: "strokeEnd")
+        head.fromValue = 0
+        head.toValue = 1
+        head.duration = lap
+        let tail = CABasicAnimation(keyPath: "strokeStart")
+        tail.fromValue = 0
+        tail.toValue = 1
+        tail.beginTime = lag
+        tail.duration = lap
+        let lapGroup = CAAnimationGroup()
+        lapGroup.animations = [head, tail]
+        lapGroup.duration = lap + lag
+        lapGroup.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0, 0.2, 1)
+        lapGroup.fillMode = .both
+        lapGroup.isRemovedOnCompletion = false
+        trace.add(lapGroup, forKey: "lap")
         CATransaction.commit()
     }
 }
@@ -173,7 +271,11 @@ final class ThumbnailController {
     let screen: NSScreen
     let panel: NSPanel
     var targetFrame: CGRect = .zero
+    /// Tamaño de la miniatura desplegada; en la pila, las de detrás se estrechan.
+    let naturalSize: CGSize
     private(set) var isDismissed = false
+    /// Ya ha terminado su animación de llegada y la bandeja puede moverla.
+    fileprivate(set) var isRevealed = false
     private let view: ThumbnailView
     private weak var manager: ThumbnailManager?
 
@@ -183,6 +285,7 @@ final class ThumbnailController {
         self.manager = manager
 
         let size = ThumbnailController.thumbnailSize(for: capture.pointSize)
+        naturalSize = size
         panel = NSPanel(contentRect: CGRect(origin: .zero, size: size),
                         styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
@@ -212,6 +315,27 @@ final class ThumbnailController {
     func refreshImage() {
         view.setImage(capture.image, pointSize: capture.pointSize)
     }
+
+    /// Coloca la miniatura en la bandeja: `depth` es su posición en la pila y `badge` el total que hay debajo.
+    fileprivate func place(_ frame: CGRect, depth: Int, badge: Int, hidden: Bool, animated: Bool) {
+        targetFrame = frame
+        view.setStack(depth: depth, badge: badge)
+        guard animated, !isDismissed else { return }
+        let alpha: CGFloat = hidden ? 0 : 1
+        let revealed = isRevealed
+        guard panel.frame != frame || (revealed && panel.alphaValue != alpha) else { return }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Theme.reduceMotion ? 0 : 0.34
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+            panel.animator().setFrame(frame, display: true)
+            if revealed { panel.animator().alphaValue = alpha }
+        }
+    }
+
+    fileprivate func hoverChanged(inside: Bool) { manager?.hoverChanged(inside: inside) }
+
+    /// Todas las miniaturas de esta pantalla, para arrastrarlas juntas.
+    fileprivate var siblings: [ThumbnailController] { manager?.controllers(on: screen) ?? [self] }
 
     /// Rectángulo que ocupa la imagen dentro de la miniatura, en coordenadas de pantalla.
     var imageFrameOnScreen: CGRect? {
@@ -300,6 +424,9 @@ final class ThumbnailView: NSView, NSDraggingSource {
     private let imageLayer = CALayer()
     private let blurLayer = CALayer()
     private let tintLayer = CALayer()
+    private let depthLayer = CALayer()
+    private let badge = CATextLayer()
+    private let badgeBack = CALayer()
     private let overlay = PassthroughView()
     private let actionStack = NSStackView()
     private var exportChip: HoverButton!
@@ -311,6 +438,9 @@ final class ThumbnailView: NSView, NSDraggingSource {
     private var didDrag = false
     private var isHovering = false
     private var toastToken = 0
+    private var swipeOffset: CGFloat = 0
+    private var isSwiping = false
+    private var draggedControllers: [ThumbnailController] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -336,6 +466,7 @@ final class ThumbnailView: NSView, NSDraggingSource {
 
         buildOverlay()
         buildToast()
+        buildStackLayers()
 
         addTrackingArea(NSTrackingArea(rect: .zero,
                                        options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
@@ -465,6 +596,61 @@ final class ThumbnailView: NSView, NSDraggingSource {
             stack.trailingAnchor.constraint(equalTo: toast.trailingAnchor, constant: -14),
             stack.centerYAnchor.constraint(equalTo: toast.centerYAnchor),
         ])
+    }
+
+    // MARK: Pila
+
+    private func buildStackLayers() {
+        depthLayer.backgroundColor = NSColor.black.cgColor
+        depthLayer.opacity = 0
+        depthLayer.frame = bounds
+        depthLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        depthLayer.zPosition = 10
+        layer?.addSublayer(depthLayer)
+
+        badgeBack.backgroundColor = Theme.accent.cgColor
+        badgeBack.cornerCurve = .continuous
+        badgeBack.opacity = 0
+        badgeBack.zPosition = 11
+        badgeBack.shadowColor = NSColor.black.cgColor
+        badgeBack.shadowOpacity = 0.35
+        badgeBack.shadowRadius = 3
+        badgeBack.shadowOffset = CGSize(width: 0, height: -1)
+        badge.font = NSFont.systemFont(ofSize: 11, weight: .bold)
+        badge.fontSize = 11
+        badge.alignmentMode = .center
+        badge.foregroundColor = NSColor.white.cgColor
+        badge.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+        badgeBack.addSublayer(badge)
+        layer?.addSublayer(badgeBack)
+    }
+
+    /// `depth` oscurece la tarjeta según lo atrás que esté; `badge` muestra cuántas capturas hay en la pila.
+    func setStack(depth: Int, badge count: Int) {
+        let text = count > 1 ? "\(count)" : ""
+        if (badge.string as? String) != text, count > 1 {
+            withoutActions {
+                badge.string = text
+                let width = max(20, CGFloat(text.count) * 7 + 13)
+                badgeBack.bounds = CGRect(x: 0, y: 0, width: width, height: 20)
+                badgeBack.cornerRadius = 10
+                badge.frame = CGRect(x: 0, y: 3, width: width, height: 14)
+                layoutBadge()
+            }
+        }
+        withLayerAnimation(0.22) {
+            depthLayer.opacity = Float(min(depth, 3)) * 0.26
+            badgeBack.opacity = count > 1 ? 1 : 0
+        }
+    }
+
+    private func layoutBadge() {
+        badgeBack.position = CGPoint(x: bounds.maxX - 8 - badgeBack.bounds.width / 2, y: bounds.maxY - 8 - 10)
+    }
+
+    override func layout() {
+        super.layout()
+        withoutActions { layoutBadge() }
     }
 
     // MARK: Formato y tamaño
@@ -599,6 +785,7 @@ final class ThumbnailView: NSView, NSDraggingSource {
 
     override func mouseEntered(with event: NSEvent) {
         isHovering = true
+        controller?.hoverChanged(inside: true)
         setDimmed(true)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
@@ -609,6 +796,7 @@ final class ThumbnailView: NSView, NSDraggingSource {
 
     override func mouseExited(with event: NSEvent) {
         isHovering = false
+        controller?.hoverChanged(inside: false)
         if toast.alphaValue == 0 { setDimmed(false) }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
@@ -636,11 +824,54 @@ final class ThumbnailView: NSView, NSDraggingSource {
         guard let start = mouseDownPoint, !didDrag, let controller else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard hypot(point.x - start.x, point.y - start.y) > 4 else { return }
-        guard let url = controller.capture.temporaryFileURL() else { return }
+        // Con ⇧ se arrastran a la vez todas las capturas de la bandeja.
+        let group = event.modifierFlags.contains(.shift) ? controller.siblings : [controller]
+        var items: [NSDraggingItem] = []
+        var dragged: [ThumbnailController] = []
+        for (index, member) in group.enumerated() {
+            guard let url = member.capture.temporaryFileURL() else { continue }
+            let item = NSDraggingItem(pasteboardWriter: url as NSURL)
+            let shift = CGFloat(index) * 10
+            item.setDraggingFrame(bounds.offsetBy(dx: shift, dy: shift), contents: member.capture.nsImage)
+            items.append(item)
+            dragged.append(member)
+        }
+        guard !items.isEmpty else { return }
         didDrag = true
-        let item = NSDraggingItem(pasteboardWriter: url as NSURL)
-        item.setDraggingFrame(bounds, contents: controller.capture.nsImage)
-        beginDraggingSession(with: [item], event: event, source: self)
+        draggedControllers = dragged
+        beginDraggingSession(with: items, event: event, source: self)
+    }
+
+    // MARK: Descartar deslizando
+
+    /// Deslizar con dos dedos hacia el borde de la pantalla lanza la miniatura fuera, como una notificación.
+    override func scrollWheel(with event: NSEvent) {
+        guard event.hasPreciseScrollingDeltas, let controller, let panel = window else { return }
+        if event.phase == .began {
+            isSwiping = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+            swipeOffset = 0
+        }
+        guard isSwiping else { return }
+        if event.phase == .changed || event.phase == .began {
+            swipeOffset += event.scrollingDeltaX
+            // Hacia el borde sigue al dedo; hacia dentro ofrece resistencia.
+            let offset = swipeOffset < 0 ? swipeOffset : swipeOffset * 0.18
+            let target = controller.targetFrame
+            panel.setFrameOrigin(CGPoint(x: target.minX + offset, y: target.minY))
+            panel.alphaValue = 1 - min(1, max(0, -offset) / 240) * 0.65
+        } else if event.phase == .ended || event.phase == .cancelled {
+            isSwiping = false
+            if event.phase == .ended, swipeOffset < -90 {
+                controller.dismiss()
+            } else {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = Theme.reduceMotion ? 0 : 0.3
+                    context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+                    panel.animator().setFrame(controller.targetFrame, display: true)
+                    panel.animator().alphaValue = 1
+                }
+            }
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -656,11 +887,12 @@ final class ThumbnailView: NSView, NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint,
                          operation: NSDragOperation) {
+        let dragged = draggedControllers
+        draggedControllers = []
         if !operation.isEmpty {
-            // El destino puede tardar en leer el archivo: no se borra de inmediato.
-            let controller = self.controller
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { controller?.dismiss() }
-            window?.orderOut(nil)
+            // El destino puede tardar en leer los archivos: no se borran de inmediato.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { dragged.forEach { $0.dismiss() } }
+            dragged.forEach { $0.panel.orderOut(nil) }
         }
     }
 

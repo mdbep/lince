@@ -150,6 +150,8 @@ final class SelectionView: NSView {
     private let guideH = CALayer()
     private let guideV = CALayer()
     private let borderLayer = CAShapeLayer()
+    private let snapLineX = CALayer()
+    private let snapLineY = CALayer()
     private let highlightLayer = CAShapeLayer()
     private let sizePill: PillLayer
     private let hintPill: PillLayer?
@@ -167,6 +169,11 @@ final class SelectionView: NSView {
     private var cursor: CGPoint?
     private var hovered: WindowInfo?
     private var spaceDown = false
+    /// Bordes a los que se pega la selección: los de cada ventana (de delante a atrás) y los del área útil.
+    private var snapRects: [CGRect]?
+    private var snappedX: CGFloat?
+    private var snappedY: CGFloat?
+    private static let snapDistance: CGFloat = 7
     private var didAppear = false
 
     /// Cursor de cámara para el modo ventana.
@@ -264,7 +271,15 @@ final class SelectionView: NSView {
         loupeShadow.isHidden = true
         loupe.isHidden = true
 
-        var layers: [CALayer] = [imageLayer, dimLayer, guideH, guideV, borderLayer, highlightLayer,
+        for line in [snapLineX, snapLineY] {
+            line.backgroundColor = Theme.accent.cgColor
+            line.shadowColor = Theme.accent.cgColor
+            line.shadowOpacity = 0.9
+            line.shadowRadius = 3
+            line.shadowOffset = .zero
+            line.opacity = 0
+        }
+        var layers: [CALayer] = [imageLayer, dimLayer, guideH, guideV, borderLayer, snapLineX, snapLineY, highlightLayer,
                                  sizePill, loupeShadow, loupe]
         if let hintPill {
             hintPill.setText(hintText)
@@ -391,22 +406,94 @@ final class SelectionView: NSView {
             if let hovered { onFinish?(.window(hovered)) }
             return
         }
-        anchor = point
+        anchor = snap(point, flags: event.modifierFlags, feedback: false)
         lastDragPoint = point
         selection = .zero
         updateLayers()
     }
 
+    // MARK: - Imán
+
+    /// Acerca el punto al borde visible más próximo de una ventana o del área útil de la pantalla.
+    /// Con ⌘ pulsado, o al mover o cuadrar la selección, no se pega a nada.
+    private func snap(_ point: CGPoint, flags: NSEvent.ModifierFlags, feedback: Bool = true) -> CGPoint {
+        let before = (snappedX, snappedY)
+        snappedX = nil
+        snappedY = nil
+        var result = point
+        if Settings.magnet, !flags.contains(.command), !flags.contains(.shift), !spaceDown, let window {
+            if snapRects == nil {
+                let visible = convert(window.convertFromScreen(shot.screen.visibleFrame), from: nil)
+                snapRects = windowList.map { convert(window.convertFromScreen($0.frame), from: nil) } + [visible]
+            }
+            let rects = snapRects ?? []
+            let reach = Self.snapDistance
+            var bestX = reach + 1, bestY = reach + 1
+            for (index, rect) in rects.enumerated() {
+                // Un borde solo cuenta si a la altura del cursor no lo tapa una ventana de delante.
+                func isVisible(_ probe: CGPoint) -> Bool {
+                    index == rects.count - 1 || !rects[..<index].contains { $0.contains(probe) }
+                }
+                if point.y >= rect.minY - reach, point.y <= rect.maxY + reach {
+                    let y = min(max(point.y, rect.minY + 1), rect.maxY - 1)
+                    for (edge, inward) in [(rect.minX, 1.0), (rect.maxX, -1.0)] {
+                        let distance = abs(point.x - edge)
+                        if distance < bestX, edge > bounds.minX + 1, edge < bounds.maxX - 1,
+                           isVisible(CGPoint(x: edge + inward, y: y)) {
+                            bestX = distance
+                            snappedX = edge
+                        }
+                    }
+                }
+                if point.x >= rect.minX - reach, point.x <= rect.maxX + reach {
+                    let x = min(max(point.x, rect.minX + 1), rect.maxX - 1)
+                    for (edge, inward) in [(rect.minY, 1.0), (rect.maxY, -1.0)] {
+                        let distance = abs(point.y - edge)
+                        if distance < bestY, edge > bounds.minY + 1, edge < bounds.maxY - 1,
+                           isVisible(CGPoint(x: x, y: edge + inward)) {
+                            bestY = distance
+                            snappedY = edge
+                        }
+                    }
+                }
+            }
+            if let snappedX { result.x = snappedX }
+            if let snappedY { result.y = snappedY }
+        }
+        if feedback, (snappedX != nil && snappedX != before.0) || (snappedY != nil && snappedY != before.1) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+        return result
+    }
+
+    private func clearSnap() {
+        snappedX = nil
+        snappedY = nil
+    }
+
+    private func updateSnapLines() {
+        let showX = snappedX != nil && !selection.isEmpty, showY = snappedY != nil && !selection.isEmpty
+        if let x = snappedX, showX {
+            snapLineX.frame = CGRect(x: x - 0.5, y: selection.minY - 18, width: 1, height: selection.height + 36)
+        }
+        if let y = snappedY, showY {
+            snapLineY.frame = CGRect(x: selection.minX - 18, y: y - 0.5, width: selection.width + 36, height: 1)
+        }
+        snapLineX.opacity = showX ? 1 : 0
+        snapLineY.opacity = showY ? 1 : 0
+    }
+
     override func mouseDragged(with event: NSEvent) {
         guard !windowMode, var start = anchor else { return }
-        let point = convert(event.locationInWindow, from: nil)
+        let raw = convert(event.locationInWindow, from: nil)
+        let point = snap(raw, flags: event.modifierFlags)
         if spaceDown {
             // Con Espacio pulsado se desplaza toda la selección en lugar de redimensionarla.
             start.x += point.x - lastDragPoint.x
             start.y += point.y - lastDragPoint.y
             anchor = start
         }
-        lastDragPoint = point
+        lastDragPoint = raw
         cursor = point
 
         var dx = point.x - start.x, dy = point.y - start.y
@@ -422,7 +509,10 @@ final class SelectionView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        defer { anchor = nil }
+        defer {
+            anchor = nil
+            clearSnap()
+        }
         guard !windowMode, anchor != nil else { return }
         guard selection.width >= 3, selection.height >= 3 else {
             // Un clic sin arrastrar no hace nada: se puede volver a intentar o cancelar con Esc.
@@ -502,6 +592,7 @@ final class SelectionView: NSView {
 
             updateGuidesAndLoupe()
 
+            updateSnapLines()
             if selection.isEmpty {
                 borderLayer.path = nil
                 sizePill.isHidden = true

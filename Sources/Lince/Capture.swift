@@ -19,6 +19,17 @@ enum Settings {
         set { defaults.set(newValue, forKey: "showsLoupe") }
     }
 
+    /// La selección se pega a los bordes de las ventanas.
+    static var magnet: Bool {
+        get { defaults.object(forKey: "magnet") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "magnet") }
+    }
+
+    static var shutterSound: ShutterSound {
+        get { ShutterSound(rawValue: defaults.string(forKey: "shutterSound") ?? "") ?? .lince }
+        set { defaults.set(newValue.rawValue, forKey: "shutterSound") }
+    }
+
     static var didShowWelcome: Bool {
         get { defaults.bool(forKey: "didShowWelcome") }
         set { defaults.set(newValue, forKey: "didShowWelcome") }
@@ -52,6 +63,32 @@ enum Settings {
     static var editorColor: Int {
         get { defaults.integer(forKey: "editorColor") }
         set { defaults.set(newValue, forKey: "editorColor") }
+    }
+
+    /// Últimos ajustes del fondo del editor (estilo, margen, esquinas y sombra).
+    static var backdropOptions: BackdropChoice {
+        get {
+            var choice = BackdropChoice(style: 0)
+            if let style = defaults.object(forKey: "backdropStyle") as? Int {
+                // -1 recuerda que se usó el automático; sus colores se calculan con cada captura.
+                if style == -1 { choice.auto = [] } else if Backdrop.styles.indices.contains(style) { choice.style = style }
+            }
+            if let padding = defaults.object(forKey: "backdropPadding") as? Double { choice.padding = CGFloat(padding) }
+            if let radius = defaults.object(forKey: "backdropRadius") as? Double { choice.radius = CGFloat(radius) }
+            if let shadow = defaults.object(forKey: "backdropShadow") as? Double { choice.shadow = CGFloat(shadow) }
+            choice.padding = min(max(choice.padding, BackdropChoice.paddingRange.lowerBound),
+                                 BackdropChoice.paddingRange.upperBound)
+            choice.radius = min(max(choice.radius, BackdropChoice.radiusRange.lowerBound),
+                                BackdropChoice.radiusRange.upperBound)
+            choice.shadow = min(max(choice.shadow, 0), 1)
+            return choice
+        }
+        set {
+            defaults.set(newValue.auto != nil ? -1 : newValue.style, forKey: "backdropStyle")
+            defaults.set(Double(newValue.padding), forKey: "backdropPadding")
+            defaults.set(Double(newValue.radius), forKey: "backdropRadius")
+            defaults.set(Double(newValue.shadow), forKey: "backdropShadow")
+        }
     }
 
     static var editorWidth: Int {
