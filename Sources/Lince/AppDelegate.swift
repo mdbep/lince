@@ -12,6 +12,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     private var shortcutsSuspended = false
     private let selection = SelectionController()
     private let thumbnails = ThumbnailManager()
+    private let recorder = RecordingController()
+    private var statusMenu: NSMenu!
+    private var recordItem: NSMenuItem!
+    /// Se pidió salir en plena grabación: se sale en cuanto el vídeo quede cerrado.
+    private var quitsAfterRecording = false
     private var editors: [EditorController] = []
     private var isCapturing = false
     private var shortcutTimer: Timer?
@@ -27,11 +32,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
             NSApp.terminate(nil)
             return
         }
+        // Modo interno: graba unos segundos de una ventana de prueba propia y comprueba el resultado.
+        if let index = CommandLine.arguments.firstIndex(of: "--record-selftest"),
+           CommandLine.arguments.count > index + 1 {
+            RecordingChecks.live(to: URL(fileURLWithPath: CommandLine.arguments[index + 1], isDirectory: true))
+            NSApp.terminate(nil)
+            return
+        }
 
         thumbnails.actions = self
         WelcomeController.shared.onShortcutsChanged = { [weak self] in self?.syncSystemShortcuts() }
         HistoryController.shared.onRestore = { [weak self] entry in self?.restore(entry) }
         buildStatusItem()
+        recorder.onStatus = { [weak self] in
+            guard let self else { return }
+            self.updateRecordingStatus()
+            if self.quitsAfterRecording, !self.recorder.isActive {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        recorder.onError = { [weak self] in self?.thumbnailReport(error: $0) }
+        recorder.onFinish = { [weak self] capture, screen, rect in
+            self?.statusItem.blink()
+            self?.thumbnails.add(capture, on: screen, from: rect)
+        }
+        RecordingStore.purge()
 
         SettingsController.shared.onSystemShortcutsChanged = { [weak self] in self?.syncSystemShortcuts() }
         SettingsController.shared.onError = { [weak self] in self?.thumbnailReport(error: $0) }
@@ -58,6 +83,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         }
     }
 
+    /// Salir mientras se graba dejaría un vídeo a medias e ilegible: antes se detiene y se guarda.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard recorder.isRecording else { return .terminateNow }
+        quitsAfterRecording = true
+        recorder.stop()
+        return .terminateLater
+    }
+
     private func perform(_ action: ShortcutAction) {
         switch action {
         case .area: captureArea()
@@ -65,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         case .fullScreen: captureFullScreen()
         case .text: captureText()
         case .repeatArea: repeatLastArea()
+        case .record: toggleRecording()
         case .palette: CommandPaletteController.shared.toggle()
         }
     }
@@ -137,6 +171,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         timerItem.submenu = timerMenu
 
         menu.addItem(.separator())
+        recordItem = add("Grabar la pantalla…", "record.circle", #selector(toggleRecording), to: menu, shortcut: .record)
+        menu.addItem(.separator())
         _ = add("Paleta de comandos…", "command", #selector(showPalette), to: menu, shortcut: .palette)
         _ = add("Historial de capturas…", "clock.arrow.circlepath", #selector(showHistory), to: menu)
         _ = add("Abrir carpeta de capturas", "folder", #selector(openSaveFolder), to: menu)
@@ -149,6 +185,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         let quit = menu.addItem(withTitle: "Salir de Lince", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.image = NSImage(systemSymbolName: "xmark.circle", accessibilityDescription: nil)
         statusItem.menu = menu
+        statusMenu = menu
+    }
+
+    /// Mientras se graba, el icono de la barra de menús es un botón de parar con el tiempo al lado.
+    private func updateRecordingStatus() {
+        guard let button = statusItem.button else { return }
+        let recording = recorder.isRecording || recorder.phase == .finishing
+        if recording {
+            if statusItem.menu != nil {
+                statusItem.menu = nil
+                statusItem.length = NSStatusItem.variableLength
+                button.image = Theme.symbol("stop.circle.fill", size: 14, weight: .semibold)
+                button.image?.isTemplate = true
+                button.contentTintColor = RecordingStyle.red
+                button.imagePosition = .imageLeading
+                button.target = self
+                button.action = #selector(stopRecording)
+                button.toolTip = "Detener la grabación"
+            }
+            let font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+            button.attributedTitle = NSAttributedString(string: " \(recorder.elapsedText)", attributes: [.font: font])
+        } else if statusItem.menu == nil {
+            button.attributedTitle = NSAttributedString(string: "")
+            button.image = Theme.menuBarIcon()
+            button.contentTintColor = nil
+            button.imagePosition = .imageOnly
+            button.action = nil
+            button.toolTip = "Lince"
+            statusItem.length = NSStatusItem.squareLength
+            statusItem.menu = statusMenu
+        }
+    }
+
+    @objc private func stopRecording() { recorder.stop() }
+
+    /// El mismo atajo empieza y detiene; si aún se estaban eligiendo las opciones, las cierra.
+    @objc func toggleRecording() {
+        if recorder.isRecording {
+            recorder.stop()
+        } else if recorder.isActive {
+            recorder.cancel()
+        } else {
+            startSelection(.record)
+        }
+    }
+
+    private func recordWindow() {
+        guard !recorder.isActive else { return }
+        startSelection(.record, windowMode: true)
+    }
+
+    private func recordFullScreen() {
+        guard !recorder.isActive, !selection.isActive else { return }
+        guard ScreenCapturer.hasPermission else {
+            WelcomeController.shared.show()
+            return
+        }
+        recorder.begin(.screen(NSScreen.underMouse))
+    }
+
+    /// Vuelve a sacar como miniatura la última grabación, aunque se hubiera cerrado.
+    private func restoreLastRecording() {
+        let screen = NSScreen.underMouse
+        guard let url = RecordingStore.latest else {
+            Toast.show("No hay grabaciones recientes", symbol: "film", on: screen)
+            return
+        }
+        guard !thumbnails.showsRecording(at: url) else {
+            Toast.show("Esa grabación ya está en pantalla", symbol: "rectangle.on.rectangle", on: screen)
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let loaded = await RecordingStore.load(url) else {
+                Toast.show("No se ha podido abrir la grabación", symbol: "exclamationmark.triangle", on: screen)
+                return
+            }
+            self?.thumbnails.add(Capture(recording: loaded.recording, poster: loaded.poster), on: screen, from: nil)
+        }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -167,6 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
             }
         }
         repeatItem.isEnabled = Settings.lastArea != nil
+        recordItem.title = recorder.isActive ? "Cancelar la grabación" : "Grabar la pantalla…"
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -195,6 +310,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
             Command(title: "Copiar texto de la pantalla", symbol: "text.viewfinder", keywords: "ocr leer reconocer",
                     keys: keys(.text)) { [weak self] in self?.captureText() },
         ]
+        if recorder.isRecording {
+            list.insert(Command(title: "Detener la grabación", symbol: "stop.circle", keywords: "parar terminar video",
+                                keys: keys(.record)) { [weak self] in self?.recorder.stop() }, at: 0)
+        } else if !recorder.isActive {
+            list += [
+                Command(title: "Grabar la pantalla", symbol: "record.circle", keywords: "video gif area zona grabacion",
+                        keys: keys(.record)) { [weak self] in self?.toggleRecording() },
+                Command(title: "Grabar una ventana", symbol: "macwindow.badge.plus", keywords: "video gif app grabacion") {
+                    [weak self] in self?.recordWindow()
+                },
+                Command(title: "Grabar la pantalla completa", symbol: "display", keywords: "video gif entera monitor grabacion") {
+                    [weak self] in self?.recordFullScreen()
+                },
+            ]
+        }
+        if RecordingStore.latest != nil {
+            list.append(Command(title: "Recuperar la última grabación", symbol: "film", keywords: "video gif volver reciente") {
+                [weak self] in self?.restoreLastRecording()
+            })
+        }
         if Settings.lastArea != nil {
             list.append(Command(title: "Repetir última área", symbol: "arrow.clockwise", keywords: "otra vez misma",
                                 keys: keys(.repeatArea)) { [weak self] in self?.repeatLastArea() })
@@ -229,7 +364,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
                 SettingsController.shared.show()
             },
             Command(title: "Cambiar atajos de teclado", symbol: "keyboard", keywords: "teclas combinacion") {
-                SettingsController.shared.show(tab: 2)
+                SettingsController.shared.show(tab: SettingsController.shortcutsTab)
             },
             Command(title: "Permisos y bienvenida", symbol: "hand.raised", keywords: "grabacion pantalla ayuda") {
                 WelcomeController.shared.show()
@@ -284,6 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     }
 
     private func startSelection(_ purpose: SelectionPurpose, windowMode: Bool = false) {
+        if purpose.isRecording, recorder.isActive { return }
         guard beginCapture() else { return }
         let frontmost = NSWorkspace.shared.frontmostApplication
         previousApp = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : frontmost
@@ -333,6 +469,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
                              on: NSScreen.containing(info.frame)) { [weak self] completed in
                 if completed { self?.captureWindow(info) } else { self?.isCapturing = false }
             }
+        case (.record, .area(_, let rect)):
+            isCapturing = false
+            recorder.begin(.area(rect, NSScreen.containing(rect)))
+        case (.record, .window(let info)):
+            isCapturing = false
+            recorder.begin(.window(info))
+        case (.record, .screen(let screen)):
+            isCapturing = false
+            recorder.begin(.screen(screen))
+        case (_, .screen):
+            isCapturing = false
         }
     }
 
@@ -401,6 +548,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
     // MARK: - Acciones de la miniatura
 
     func thumbnailEdit(_ capture: Capture) {
+        guard capture.recording == nil else { return }
         if let existing = editors.first(where: { $0.capture === capture }) {
             existing.show()
             return

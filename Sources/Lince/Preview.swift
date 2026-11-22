@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 
 /// Vista previa a pantalla completa: la captura crece desde la miniatura sobre un fondo atenuado.
 final class PreviewController {
@@ -37,8 +38,11 @@ final class PreviewController {
 
         let view = PreviewView(frame: CGRect(origin: .zero, size: screen.frame.size),
                                visible: screen.visibleFrame.size,
-                               image: capture.image, pointSize: capture.pointSize)
+                               image: capture.image, pointSize: capture.pointSize,
+                               recording: capture.recording)
         view.onDismiss = { [weak self] in self?.close(animated: true) }
+        // En una grabación, el espacio pausa y reanuda en lugar de cerrar.
+        if capture.recording != nil { panel.onSpace = { [weak view] in view?.togglePlayback() } }
         panel.contentView = view
         panel.setFrame(screen.frame, display: false)
         self.panel = panel
@@ -61,6 +65,7 @@ final class PreviewController {
 
     func close(animated: Bool) {
         guard let panel, let view else { return }
+        if !animated { view.close(to: nil) {} }
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
         let target = sourceFrame?().map { panel.convertFromScreen($0) }
@@ -78,12 +83,14 @@ final class PreviewController {
 
 final class PreviewPanel: NSPanel {
     var onDismiss: (() -> Void)?
+    var onSpace: (() -> Void)?
 
     override var canBecomeKey: Bool { true }
 
     override func keyDown(with event: NSEvent) {
         // Esc, espacio o retorno cierran, igual que en Vista Rápida.
         switch event.keyCode {
+        case 49 where onSpace != nil: onSpace?()
         case 53, 49, 36, 76: onDismiss?()
         default: super.keyDown(with: event)
         }
@@ -105,11 +112,16 @@ final class PreviewView: NSView {
     private let visible: CGSize
     private var targetFrame: CGRect = .zero
     private var closing = false
+    private var player: AVQueuePlayer?
+    private var looper: AVPlayerLooper?
+    private var playerLayer: AVPlayerLayer?
+    private var timeObserver: Any?
+    private let progress = CALayer()
 
     private static let pillGap: CGFloat = 14
     private static let pillHeight: CGFloat = 26
 
-    init(frame: CGRect, visible: CGSize, image: CGImage, pointSize: CGSize) {
+    init(frame: CGRect, visible: CGSize, image: CGImage, pointSize: CGSize, recording: Recording? = nil) {
         self.pointSize = pointSize
         self.visible = visible
         super.init(frame: frame)
@@ -136,6 +148,30 @@ final class PreviewView: NSView {
         picture.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
         card.addSublayer(picture)
 
+        if let recording {
+            // El vídeo se reproduce en bucle sobre su primer fotograma, con una línea fina de avance.
+            let player = AVQueuePlayer()
+            looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: recording.movieURL))
+            let video = AVPlayerLayer(player: player)
+            video.videoGravity = .resize
+            picture.addSublayer(video)
+            progress.backgroundColor = Theme.accent.cgColor
+            progress.anchorPoint = .zero
+            picture.addSublayer(progress)
+            self.player = player
+            playerLayer = video
+            timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30),
+                                                          queue: .main) { [weak self] time in
+                guard let self, let item = self.player?.currentItem else { return }
+                let total = item.duration.seconds
+                guard total.isFinite, total > 0 else { return }
+                let fraction = min(max(time.seconds / total, 0), 1)
+                withoutActions {
+                    self.progress.bounds = CGRect(x: 0, y: 0, width: self.picture.bounds.width * fraction, height: 3)
+                }
+            }
+        }
+
         pill.material = .hudWindow
         pill.blendingMode = .withinWindow
         pill.state = .active
@@ -156,8 +192,9 @@ final class PreviewView: NSView {
 
         layoutContent()
         let zoom = Int((targetFrame.width / max(pointSize.width, 1) * 100).rounded())
-        var text = "\(image.width) × \(image.height) px"
+        var text = "\(recording?.width ?? image.width) × \(recording?.height ?? image.height) px"
         if zoom != 100 { text += "  ·  \(zoom) %" }
+        if let recording { text += "  ·  \(recording.durationText)" }
         label.stringValue = text
         layoutContent()
     }
@@ -196,6 +233,8 @@ final class PreviewView: NSView {
     private func place(_ frame: CGRect) {
         card.frame = frame
         picture.frame = CGRect(origin: .zero, size: frame.size)
+        playerLayer?.frame = picture.bounds
+        progress.position = .zero
         card.shadowPath = CGPath(roundedRect: picture.frame, cornerWidth: picture.cornerRadius,
                                  cornerHeight: picture.cornerRadius, transform: nil)
     }
@@ -220,7 +259,21 @@ final class PreviewView: NSView {
         layer.add(animation, forKey: keyPath)
     }
 
+    func togglePlayback() {
+        guard let player else { return }
+        if player.rate == 0 { player.play() } else { player.pause() }
+    }
+
+    private func stopPlayback() {
+        if let timeObserver { player?.removeTimeObserver(timeObserver) }
+        timeObserver = nil
+        player?.pause()
+    }
+
+    deinit { stopPlayback() }
+
     func open(from start: CGRect?) {
+        player?.play()
         let reduce = Theme.reduceMotion
         let duration: CFTimeInterval = reduce ? 0.12 : 0.34
         let timing = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
@@ -245,6 +298,7 @@ final class PreviewView: NSView {
 
     func close(to target: CGRect?, completion: @escaping () -> Void) {
         closing = true
+        stopPlayback()
         let reduce = Theme.reduceMotion
         let duration: CFTimeInterval = reduce ? 0.1 : 0.24
         let timing = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.6, 1)

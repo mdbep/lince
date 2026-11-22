@@ -233,6 +233,8 @@ final class Capture {
     var sourceRect: CGRect?
     /// La imagen tiene zonas transparentes (una ventana con sus esquinas y su sombra).
     var hasTransparency = false
+    /// Si es una grabación, el vídeo que hay detrás; `image` es entonces su primer fotograma.
+    let recording: Recording?
 
     var export: ExportOptions {
         didSet {
@@ -253,11 +255,23 @@ final class Capture {
         self.image = image
         self.scale = max(scale, 1)
         self.export = export
+        recording = nil
         prewarm()
+    }
+
+    /// Una grabación: se maneja como una captura más, pero lo que se copia, guarda o arrastra es su archivo.
+    init(recording: Recording, poster: CGImage) {
+        id = UUID().uuidString
+        image = poster
+        // La miniatura y la vista previa miden en puntos de pantalla.
+        scale = CGFloat(poster.width) / max(recording.pointSize.width, 1)
+        export = .saved
+        self.recording = recording
     }
 
     /// Se codifica en segundo plano para que arrastrar o previsualizar sea inmediato.
     private func prewarm() {
+        guard recording == nil else { return }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             _ = self?.temporaryFileURL()
         }
@@ -273,6 +287,7 @@ final class Capture {
     var exportPixelSize: (width: Int, height: Int) { export.pixelSize(for: image) }
 
     var fileName: String {
+        if let recording { return recording.fileName }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd 'a las' HH.mm.ss"
@@ -317,6 +332,7 @@ final class Capture {
 
     /// Archivo temporal usado para arrastrar y para Vista Rápida.
     func temporaryFileURL() -> URL? {
+        if let recording { return recording.readyURL }
         lock.lock()
         defer { lock.unlock() }
         if let tempURL { return tempURL }
@@ -336,6 +352,19 @@ final class Capture {
     }
 
     func copyToPasteboard() {
+        if let recording {
+            guard let url = recording.readyURL else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.writeObjects([url as NSURL])
+            // Un GIF pequeño va también como imagen, para pegarlo en apps que no aceptan archivos.
+            if recording.export.format == .gif,
+               let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size < 20_000_000,
+               let data = try? Data(contentsOf: url) {
+                pasteboard.setData(data, forType: NSPasteboard.PasteboardType(UTType.gif.identifier))
+            }
+            return
+        }
         lock.lock()
         let data = exportedDataLocked()
         let output = cachedImage ?? image
@@ -346,23 +375,28 @@ final class Capture {
 
     @discardableResult
     func saveToDefaultFolder() throws -> URL {
-        guard let data = exportedData() else {
-            throw CocoaError(.fileWriteUnknown)
-        }
+        let source = recording?.readyURL
+        let data = recording == nil ? exportedData() : nil
+        guard source != nil || data != nil else { throw CocoaError(.fileWriteUnknown) }
         let dir = Settings.saveDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = fileName as NSString
         var url = dir.appendingPathComponent(fileName)
         var counter = 2
         while FileManager.default.fileExists(atPath: url.path) {
-            let base = (fileName as NSString).deletingPathExtension
-            url = dir.appendingPathComponent("\(base) (\(counter)).\(export.format.fileExtension)")
+            url = dir.appendingPathComponent("\(name.deletingPathExtension) (\(counter)).\(name.pathExtension)")
             counter += 1
         }
-        try data.write(to: url, options: .atomic)
+        if let source {
+            try FileManager.default.copyItem(at: source, to: url)
+        } else {
+            try data?.write(to: url, options: .atomic)
+        }
         return url
     }
 
     func cleanUp() {
+        recording?.cleanUp()
         invalidate()
     }
 

@@ -5,6 +5,13 @@ enum SelectionPurpose {
     case image
     case text
     case timer(Int)
+    /// Elegir qué grabar: además de un área o una ventana, admite la pantalla entera.
+    case record
+
+    var isRecording: Bool {
+        if case .record = self { return true }
+        return false
+    }
 
     var allowsWindows: Bool {
         if case .text = self { return false }
@@ -16,6 +23,8 @@ enum SelectionResult {
     /// Un área recortada de la pantalla congelada, con su rectángulo en coordenadas globales.
     case area(shot: ScreenShot, rect: CGRect)
     case window(WindowInfo)
+    /// La pantalla entera (solo al grabar).
+    case screen(NSScreen)
 }
 
 /// Muestra las pantallas "congeladas" y deja arrastrar un rectángulo o elegir una ventana.
@@ -176,8 +185,12 @@ final class SelectionView: NSView {
     private static let snapDistance: CGFloat = 7
     private var didAppear = false
 
-    /// Cursor de cámara para el modo ventana.
-    private static let cameraCursor: NSCursor = {
+    /// Cursor del modo ventana: una cámara de fotos o, al grabar, una de vídeo.
+    private static let cameraCursor = badgeCursor("camera.fill")
+    private static let videoCursor = badgeCursor("video.fill")
+    private var windowCursor: NSCursor { purpose.isRecording ? Self.videoCursor : Self.cameraCursor }
+
+    private static func badgeCursor(_ name: String) -> NSCursor {
         let size = NSSize(width: 30, height: 30)
         let image = NSImage(size: size, flipped: false) { rect in
             let circle = NSBezierPath(ovalIn: rect.insetBy(dx: 1.5, dy: 1.5))
@@ -186,7 +199,7 @@ final class SelectionView: NSView {
             NSColor.white.withAlphaComponent(0.9).setStroke()
             circle.lineWidth = 1.2
             circle.stroke()
-            if let symbol = Theme.symbol("camera.fill", size: 12, weight: .semibold) {
+            if let symbol = Theme.symbol(name, size: 12, weight: .semibold) {
                 let tinted = NSImage(size: symbol.size, flipped: false) { symbolRect in
                     symbol.draw(in: symbolRect)
                     NSColor.white.set()
@@ -199,7 +212,7 @@ final class SelectionView: NSView {
             return true
         }
         return NSCursor(image: image, hotSpot: NSPoint(x: 15, y: 15))
-    }()
+    }
 
     init(shot: ScreenShot, windowList: [WindowInfo], purpose: SelectionPurpose, showsHint: Bool) {
         self.shot = shot
@@ -297,9 +310,13 @@ final class SelectionView: NSView {
     private var hintText: String {
         let cancel = "Esc para cancelar"
         if windowMode {
-            return "Haz clic en una ventana para capturarla   ·   Espacio para volver al área   ·   \(cancel)"
+            return purpose.isRecording
+                ? "Haz clic en la ventana que quieres grabar   ·   Espacio para volver al área   ·   \(cancel)"
+                : "Haz clic en una ventana para capturarla   ·   Espacio para volver al área   ·   \(cancel)"
         }
         switch purpose {
+        case .record:
+            return "Arrastra para elegir qué grabar   ·   Espacio: una ventana   ·   ↩ pantalla completa   ·   \(cancel)"
         case .image:
             return "Arrastra para seleccionar   ·   Espacio para capturar una ventana   ·   \(cancel)"
         case .text:
@@ -348,7 +365,7 @@ final class SelectionView: NSView {
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: windowMode ? SelectionView.cameraCursor : .crosshair)
+        addCursorRect(bounds, cursor: windowMode ? windowCursor : .crosshair)
     }
 
     // MARK: - Modo ventana
@@ -360,7 +377,7 @@ final class SelectionView: NSView {
         hintPill?.setText(hintText)
         if let hintPill { withLayerAnimation(0.15) { hintPill.opacity = 1 } }
         window?.invalidateCursorRects(for: self)
-        (enabled ? SelectionView.cameraCursor : NSCursor.crosshair).set()
+        (enabled ? windowCursor : NSCursor.crosshair).set()
         updateHover()
         updateLayers()
     }
@@ -514,7 +531,9 @@ final class SelectionView: NSView {
             clearSnap()
         }
         guard !windowMode, anchor != nil else { return }
-        guard selection.width >= 3, selection.height >= 3 else {
+        // Un vídeo necesita un mínimo de tamaño para que el códec lo acepte y se vea algo.
+        let minimum: CGFloat = purpose.isRecording ? 32 : 3
+        guard selection.width >= minimum, selection.height >= minimum else {
             // Un clic sin arrastrar no hace nada: se puede volver a intentar o cancelar con Esc.
             selection = .zero
             updateLayers()
@@ -541,6 +560,8 @@ final class SelectionView: NSView {
         switch event.keyCode {
         case 53: // Esc
             onFinish?(nil)
+        case 36, 76: // Retorno: al grabar, la pantalla entera.
+            if purpose.isRecording, anchor == nil { onFinish?(.screen(shot.screen)) }
         case 49: // Espacio: mueve la selección si se está arrastrando; si no, alterna el modo ventana.
             guard !event.isARepeat else { return }
             if anchor != nil {

@@ -280,8 +280,9 @@ enum Snapshot {
             _ = paletteWindow
         }
 
-        // Ajustes: las tres pestañas.
-        for (index, name) in ["settings-general", "settings-capture", "settings-shortcuts"].enumerated() {
+        // Ajustes: las cuatro pestañas.
+        for (index, name) in ["settings-general", "settings-capture", "settings-recording",
+                              "settings-shortcuts"].enumerated() {
             let settings = SettingsController()
             let content = settings.makeContent()
             settings.select(index, animated: false)
@@ -311,6 +312,7 @@ enum Snapshot {
             try? data.write(to: directory.appendingPathComponent("backdrop-auto.png"))
         }
 
+        report += RecordingChecks.run(to: directory)
         try? report.write(to: directory.appendingPathComponent("export.txt"), atomically: true, encoding: .utf8)
 
         // Bienvenida.
@@ -336,7 +338,7 @@ enum Snapshot {
         }
     }
 
-    private static func spin(until done: () -> Bool, timeout: TimeInterval) {
+    static func spin(until done: () -> Bool, timeout: TimeInterval) {
         let limit = Date().addingTimeInterval(timeout)
         while !done(), Date() < limit {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
@@ -388,7 +390,7 @@ enum Snapshot {
         return rep.cgImage!
     }
 
-    private static func host(_ view: NSView, size: CGSize) -> NSWindow {
+    static func host(_ view: NSView, size: CGSize) -> NSWindow {
         let window = NSWindow(contentRect: CGRect(origin: .zero, size: size), styleMask: .borderless,
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -397,7 +399,7 @@ enum Snapshot {
         return window
     }
 
-    private static func write(_ view: NSView, to url: URL) {
+    static func write(_ view: NSView, to url: URL) {
         view.layoutSubtreeIfNeeded()
         view.displayIfNeeded()
         // Las vistas hechas solo de capas se renderizan desde la capa; el resto, por AppKit.

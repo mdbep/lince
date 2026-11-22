@@ -1,7 +1,7 @@
 import AppKit
 import ServiceManagement
 
-/// Ventana de ajustes: tres pestañas (General, Captura y Atajos) con cambios que se aplican al momento.
+/// Ventana de ajustes: cuatro pestañas (General, Captura, Grabación y Atajos) con cambios que se aplican al momento.
 final class SettingsController: NSObject, NSWindowDelegate {
     static let shared = SettingsController()
 
@@ -21,7 +21,10 @@ final class SettingsController: NSObject, NSWindowDelegate {
 
     private static let width: CGFloat = 520
     private static let inset: CGFloat = 24
-    private static let tabs = [("General", "gearshape"), ("Captura", "viewfinder"), ("Atajos", "keyboard")]
+    private static let tabs = [("General", "gearshape"), ("Captura", "viewfinder"),
+                               ("Grabación", "record.circle"), ("Atajos", "keyboard")]
+    /// Posición de la pestaña de atajos, para abrirla directamente.
+    static let shortcutsTab = 3
 
     func show(tab: Int? = nil) {
         if window == nil { build() }
@@ -91,7 +94,7 @@ final class SettingsController: NSObject, NSWindowDelegate {
         line.layer?.backgroundColor = Theme.hairline.cgColor
         line.translatesAutoresizingMaskIntoConstraints = false
 
-        pages = [generalPage(), capturePage(), shortcutsPage()]
+        pages = [generalPage(), capturePage(), recordingPage(), shortcutsPage()]
         pageHost.translatesAutoresizingMaskIntoConstraints = false
         for page in pages {
             page.translatesAutoresizingMaskIntoConstraints = false
@@ -202,6 +205,23 @@ final class SettingsController: NSObject, NSWindowDelegate {
         ])
     }
 
+    private func recordingPage() -> NSView {
+        card([
+            row("Cuenta atrás", "Tiempo para prepararte antes de que empiece a grabar.",
+                choice(["Sin cuenta", "3 s", "5 s"], values: [0, 3, 5]) { Settings.recordCountdown } set: {
+                    Settings.recordCountdown = $0
+                }),
+            row("Fluidez del vídeo", "A 60 el movimiento es más suave y el archivo pesa más.",
+                choice(["30 fps", "60 fps"], values: [30, 60]) { Settings.recordFPS } set: { Settings.recordFPS = $0 }),
+            row("Resolución Retina", "Graba todos los píxeles de la pantalla. Sin ella, los archivos pesan mucho menos.",
+                toggle { Settings.recordRetina } set: { Settings.recordRetina = $0 }),
+            row("Mostrar el cursor", nil,
+                toggle { Settings.recordCursor } set: { Settings.recordCursor = $0 }),
+            row("Resaltar los clics", "Dibuja una onda alrededor del cursor cada vez que haces clic.",
+                toggle { Settings.recordClicks } set: { Settings.recordClicks = $0 }),
+        ])
+    }
+
     private func shortcutsPage() -> NSView {
         var rows: [NSView] = ShortcutAction.allCases.map { action in
             let recorder = ShortcutRecorder(action: action)
@@ -304,6 +324,26 @@ final class SettingsController: NSObject, NSWindowDelegate {
     }
 
     private var toggleActions: [ObjectIdentifier: (Bool) -> Void] = [:]
+    private var choiceActions: [ObjectIdentifier: (Int) -> Void] = [:]
+
+    /// Selector de unas pocas opciones, cada una con su valor.
+    private func choice(_ labels: [String], values: [Int], _ get: @escaping () -> Int,
+                        set: @escaping (Int) -> Void) -> NSSegmentedControl {
+        let control = NSSegmentedControl(labels: labels, trackingMode: .selectOne, target: self,
+                                         action: #selector(choiceChanged(_:)))
+        control.controlSize = .small
+        choiceActions[ObjectIdentifier(control)] = { index in
+            if values.indices.contains(index) { set(values[index]) }
+        }
+        refreshers.append { [weak control] in
+            control?.selectedSegment = values.firstIndex(of: get()) ?? 0
+        }
+        return control
+    }
+
+    @objc private func choiceChanged(_ sender: NSSegmentedControl) {
+        choiceActions[ObjectIdentifier(sender)]?(sender.selectedSegment)
+    }
 
     private func toggle(_ get: @escaping () -> Bool, set: @escaping (Bool) -> Void) -> NSSwitch {
         let control = NSSwitch()

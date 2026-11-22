@@ -81,7 +81,7 @@ struct Shortcut: Equatable {
 
 /// Las acciones que pueden tener un atajo global.
 enum ShortcutAction: String, CaseIterable {
-    case area, window, fullScreen, text, repeatArea, palette
+    case area, window, fullScreen, text, repeatArea, record, palette
 
     var title: String {
         switch self {
@@ -90,6 +90,7 @@ enum ShortcutAction: String, CaseIterable {
         case .fullScreen: return "Capturar pantalla completa"
         case .text: return "Copiar texto de la pantalla"
         case .repeatArea: return "Repetir última área"
+        case .record: return "Grabar la pantalla / detener"
         case .palette: return "Paleta de comandos"
         }
     }
@@ -102,6 +103,7 @@ enum ShortcutAction: String, CaseIterable {
         case .fullScreen: return Shortcut(keyCode: kVK_ANSI_3, modifiers: base)
         case .text: return Shortcut(keyCode: kVK_ANSI_2, modifiers: base)
         case .repeatArea: return Shortcut(keyCode: kVK_ANSI_5, modifiers: base)
+        case .record: return Shortcut(keyCode: kVK_ANSI_6, modifiers: base)
         case .palette: return Shortcut(keyCode: kVK_Space, modifiers: base)
         }
     }

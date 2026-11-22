@@ -72,6 +72,11 @@ final class ThumbnailManager {
         for item in items { item.dismiss() }
     }
 
+    /// Hay una miniatura de esa grabación a la vista.
+    func showsRecording(at url: URL) -> Bool {
+        items.contains { $0.capture.recording?.movieURL == url }
+    }
+
     fileprivate func remove(_ controller: ThumbnailController) {
         items.removeAll { $0 === controller }
         layout(appearing: nil)
@@ -303,6 +308,10 @@ final class ThumbnailController {
         panel.contentView = view
         view.controller = self
         view.setImage(capture.image, pointSize: capture.pointSize)
+        if let recording = capture.recording {
+            view.configureForRecording()
+            recording.onChange = { [weak self] in self?.view.refreshExportChip() }
+        }
     }
 
     static func thumbnailSize(for pointSize: CGSize) -> CGSize {
@@ -368,38 +377,73 @@ final class ThumbnailController {
 
     // MARK: - Acciones
 
+    /// Ejecuta `body` cuando el archivo está listo: al momento, salvo que una grabación se esté pasando a GIF.
+    private func whenFileReady(_ body: @escaping () -> Void) {
+        guard let recording = capture.recording else {
+            body()
+            return
+        }
+        if recording.readyURL == nil, !recording.failed {
+            view.showToast("Preparando GIF…", symbol: "hourglass")
+        }
+        recording.whenReady { [weak self] url in
+            guard let self, !self.isDismissed else { return }
+            if url == nil {
+                self.view.showToast("No se pudo crear el GIF", symbol: "exclamationmark.triangle")
+            } else {
+                body()
+            }
+        }
+    }
+
     fileprivate func copy() {
-        capture.copyToPasteboard()
-        view.showToast("Copiado", symbol: "checkmark")
+        whenFileReady { [weak self] in
+            self?.capture.copyToPasteboard()
+            self?.view.showToast("Copiado", symbol: "checkmark")
+        }
     }
 
     fileprivate func save() {
-        do {
-            try capture.saveToDefaultFolder()
-            view.showToast("Guardado", symbol: "checkmark")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in self?.dismiss() }
-        } catch {
-            manager?.actions?.thumbnailReport(error: error)
+        whenFileReady { [weak self] in
+            guard let self else { return }
+            do {
+                try self.capture.saveToDefaultFolder()
+                self.view.showToast("Guardado", symbol: "checkmark")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in self?.dismiss() }
+            } catch {
+                self.manager?.actions?.thumbnailReport(error: error)
+            }
         }
     }
 
     fileprivate func saveAs() {
-        let savePanel = NSSavePanel()
-        savePanel.nameFieldStringValue = capture.fileName
-        savePanel.directoryURL = Settings.saveDirectory
-        savePanel.allowedContentTypes = [capture.export.format.type]
-        NSApp.activate(ignoringOtherApps: true)
-        guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
-        do {
-            guard let data = capture.exportedData() else { throw CocoaError(.fileWriteUnknown) }
-            try data.write(to: url, options: .atomic)
-            dismiss()
-        } catch {
-            manager?.actions?.thumbnailReport(error: error)
+        whenFileReady { [weak self] in
+            guard let self else { return }
+            let capture = self.capture
+            let savePanel = NSSavePanel()
+            savePanel.nameFieldStringValue = capture.fileName
+            savePanel.directoryURL = Settings.saveDirectory
+            savePanel.allowedContentTypes = [capture.recording?.export.format.type ?? capture.export.format.type]
+            NSApp.activate(ignoringOtherApps: true)
+            guard savePanel.runModal() == .OK, let url = savePanel.url else { return }
+            do {
+                if let source = capture.recording?.readyURL {
+                    // El panel ya ha pedido permiso para reemplazar si el archivo existía.
+                    try? FileManager.default.removeItem(at: url)
+                    try FileManager.default.copyItem(at: source, to: url)
+                } else {
+                    guard let data = capture.exportedData() else { throw CocoaError(.fileWriteUnknown) }
+                    try data.write(to: url, options: .atomic)
+                }
+                self.dismiss()
+            } catch {
+                self.manager?.actions?.thumbnailReport(error: error)
+            }
         }
     }
 
     fileprivate func pin() {
+        guard capture.recording == nil else { return }
         PinManager.shared.pin(capture, on: screen)
         dismiss()
     }
@@ -408,7 +452,10 @@ final class ThumbnailController {
         TextRecognizer.copyText(from: capture.image, on: screen)
     }
 
-    fileprivate func edit() { manager?.actions?.thumbnailEdit(capture) }
+    fileprivate func edit() {
+        guard capture.recording == nil else { return }
+        manager?.actions?.thumbnailEdit(capture)
+    }
     fileprivate func preview() { manager?.actions?.thumbnailPreview(capture) }
     fileprivate func dismissAll() { manager?.dismissAll() }
 }
@@ -430,6 +477,12 @@ final class ThumbnailView: NSView, NSDraggingSource {
     private let overlay = PassthroughView()
     private let actionStack = NSStackView()
     private var exportChip: HoverButton!
+    private var editButton: HoverButton!
+    private var pinButton: HoverButton!
+    private var previewButton: HoverButton!
+    /// En las grabaciones: duración (o progreso del GIF) a la vista sin pasar el ratón.
+    private var durationBadge: NSView?
+    private let durationLabel = NSTextField(labelWithString: "")
     private var chipToken = 0
     private let toast = NSView()
     private let toastIcon = NSImageView()
@@ -441,6 +494,12 @@ final class ThumbnailView: NSView, NSDraggingSource {
     private var swipeOffset: CGFloat = 0
     private var isSwiping = false
     private var draggedControllers: [ThumbnailController] = []
+    /// Arrastre hacia el borde para descartar: punto de pantalla donde empezó.
+    private var slideStart: CGPoint?
+    private var slideOffset: CGFloat = 0
+    private var slideSpeed: CGFloat = 0
+    private var slideTime: TimeInterval = 0
+    private static let dismissDistance: CGFloat = 70
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -516,6 +575,9 @@ final class ThumbnailView: NSView, NSDraggingSource {
         let preview = makeCorner(symbol: "eye", tooltip: "Vista rápida") { [weak self] in self?.controller?.preview() }
         let pin = makeCorner(symbol: "pin.fill", tooltip: "Fijar en pantalla") { [weak self] in self?.controller?.pin() }
         for button in [close, edit, preview, pin] { overlay.addSubview(button) }
+        editButton = edit
+        pinButton = pin
+        previewButton = preview
 
         // Etiqueta de exportación: formato, tamaño y peso. Al pulsarla se cambian al vuelo.
         exportChip = HoverButton(title: "PNG", fontSize: 10, tooltip: "Cambiar formato y tamaño",
@@ -658,6 +720,24 @@ final class ThumbnailView: NSView, NSDraggingSource {
     /// Actualiza la etiqueta; el peso se calcula en segundo plano porque exige codificar la imagen.
     func refreshExportChip() {
         guard let capture = controller?.capture else { return }
+        if let recording = capture.recording {
+            chipToken += 1
+            let label = recording.export.format.label
+            var text = "\(label) · \(recording.durationText)"
+            var badge = recording.durationText
+            if let progress = recording.progress {
+                text = "GIF · \(Int(progress * 100)) %"
+                badge = text
+            } else if recording.failed {
+                text = "GIF · no se pudo crear"
+            } else if let bytes = recording.readyFileSize {
+                text += " · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))"
+                if recording.export.format == .gif { badge = "GIF · \(badge)" }
+            }
+            exportChip.setTitle(text)
+            durationLabel.stringValue = badge
+            return
+        }
         chipToken += 1
         let token = chipToken
         let size = capture.exportPixelSize
@@ -681,6 +761,10 @@ final class ThumbnailView: NSView, NSDraggingSource {
 
     private func addExportItems(to menu: NSMenu) {
         guard let capture = controller?.capture else { return }
+        if let recording = capture.recording {
+            addRecordingItems(to: menu, for: recording)
+            return
+        }
         let options = capture.export
         menu.addItem(.sectionHeader(title: "Formato"))
         for format in ExportFormat.allCases {
@@ -702,6 +786,98 @@ final class ThumbnailView: NSView, NSDraggingSource {
         let custom = menu.addItem(withTitle: customTitle, action: #selector(chooseCustomWidth), keyEquivalent: "")
         custom.target = self
         custom.state = options.customWidth != nil ? .on : .off
+    }
+
+    /// Una grabación puede salir como MP4 o como GIF, y el GIF con varios tamaños y fluideces.
+    private func addRecordingItems(to menu: NSMenu, for recording: Recording) {
+        let options = recording.export
+        menu.addItem(.sectionHeader(title: "Formato"))
+        for format in RecordingFormat.allCases {
+            let detail = format == .video ? "\(recording.width) × \(recording.height)" : "animado, sin sonido"
+            let item = menu.addItem(withTitle: "\(format.label)  ·  \(detail)",
+                                    action: #selector(chooseRecordingFormat(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = format.rawValue
+            item.state = options.format == format ? .on : .off
+        }
+        guard options.format == .gif else { return }
+        menu.addItem(.sectionHeader(title: "Tamaño del GIF"))
+        for (title, scale) in [("Original", 1.0), ("75 %", 0.75), ("Mitad", 0.5)] {
+            let size = recording.gifSize(scale: scale)
+            let item = menu.addItem(withTitle: "\(title)  ·  \(size.width) × \(size.height)",
+                                    action: #selector(chooseGIFScale(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = scale
+            item.state = options.gifScale == scale ? .on : .off
+        }
+        menu.addItem(.sectionHeader(title: "Fluidez"))
+        for (title, fps) in [("10 fotogramas por segundo", 10), ("15 fotogramas por segundo", 15),
+                             ("20 fotogramas por segundo", 20)] {
+            let item = menu.addItem(withTitle: title, action: #selector(chooseGIFFPS(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = fps
+            item.state = options.gifFPS == fps ? .on : .off
+        }
+    }
+
+    private func setRecordingExport(_ change: (inout RecordingExport) -> Void) {
+        guard let recording = controller?.capture.recording else { return }
+        var options = recording.export
+        change(&options)
+        recording.export = options
+        refreshExportChip()
+        exportChip.springScale(to: 1, from: 0.9, stiffness: 480, damping: 18)
+    }
+
+    @objc private func chooseRecordingFormat(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let format = RecordingFormat(rawValue: raw) else { return }
+        setRecordingExport { $0.format = format }
+    }
+
+    @objc private func chooseGIFScale(_ sender: NSMenuItem) {
+        guard let scale = sender.representedObject as? Double else { return }
+        setRecordingExport { $0.gifScale = scale }
+    }
+
+    @objc private func chooseGIFFPS(_ sender: NSMenuItem) {
+        guard let fps = sender.representedObject as? Int else { return }
+        setRecordingExport { $0.gifFPS = fps }
+    }
+
+    /// Adapta la miniatura a una grabación: sin editar ni fijar, con reproducir y la duración a la vista.
+    func configureForRecording() {
+        editButton.isHidden = true
+        pinButton.isHidden = true
+        previewButton.setSymbol("play.fill", size: 9.5)
+        previewButton.toolTip = "Reproducir"
+        exportChip.toolTip = "Cambiar entre MP4 y GIF"
+
+        let badge = NSView()
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.6).cgColor
+        badge.layer?.cornerRadius = 10
+        badge.layer?.cornerCurve = .continuous
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        let icon = NSImageView()
+        icon.image = Theme.symbol("play.fill", size: 8, weight: .bold)
+        icon.contentTintColor = .white
+        durationLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold)
+        durationLabel.textColor = .white
+        let stack = NSStackView(views: [icon, durationLabel])
+        stack.spacing = 4
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        badge.addSubview(stack)
+        addSubview(badge, positioned: .below, relativeTo: overlay)
+        NSLayoutConstraint.activate([
+            badge.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            badge.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
+            badge.heightAnchor.constraint(equalToConstant: 20),
+            stack.leadingAnchor.constraint(equalTo: badge.leadingAnchor, constant: 7),
+            stack.trailingAnchor.constraint(equalTo: badge.trailingAnchor, constant: -8),
+            stack.centerYAnchor.constraint(equalTo: badge.centerYAnchor),
+        ])
+        durationBadge = badge
+        refreshExportChip()
     }
 
     private func setExport(_ change: (inout ExportOptions) -> Void) {
@@ -779,6 +955,7 @@ final class ThumbnailView: NSView, NSDraggingSource {
             tintLayer.opacity = hovering ? 1 : 0
         }
         overlay.alphaValue = hovering ? 1 : 0
+        durationBadge?.alphaValue = hovering ? 0 : 1
     }
 
     // MARK: Hover
@@ -790,6 +967,7 @@ final class ThumbnailView: NSView, NSDraggingSource {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
             overlay.animator().alphaValue = 1
+            durationBadge?.animator().alphaValue = 0
         }
         actionStack.springScale(to: 1, from: 0.9, stiffness: 480, damping: 24)
     }
@@ -801,6 +979,7 @@ final class ThumbnailView: NSView, NSDraggingSource {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.2
             overlay.animator().alphaValue = 0
+            durationBadge?.animator().alphaValue = 1
         }
     }
 
@@ -821,9 +1000,19 @@ final class ThumbnailView: NSView, NSDraggingSource {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if slideStart != nil { return slide(with: event) }
         guard let start = mouseDownPoint, !didDrag, let controller else { return }
         let point = convert(event.locationInWindow, from: nil)
         guard hypot(point.x - start.x, point.y - start.y) > 4 else { return }
+        // Hacia la izquierda no hay dónde soltar un archivo: ese gesto descarta la miniatura.
+        if point.x < start.x, abs(point.x - start.x) > abs(point.y - start.y) * 1.4 {
+            didDrag = true
+            slideStart = NSEvent.mouseLocation
+            slideOffset = 0
+            slideSpeed = 0
+            slideTime = event.timestamp
+            return slide(with: event)
+        }
         // Con ⇧ se arrastran a la vez todas las capturas de la bandeja.
         let group = event.modifierFlags.contains(.shift) ? controller.siblings : [controller]
         var items: [NSDraggingItem] = []
@@ -836,13 +1025,60 @@ final class ThumbnailView: NSView, NSDraggingSource {
             items.append(item)
             dragged.append(member)
         }
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty else {
+            // Una grabación que aún se está pasando a GIF no tiene archivo que arrastrar.
+            if controller.capture.recording != nil {
+                didDrag = true
+                showToast("Preparando GIF…", symbol: "hourglass")
+            }
+            return
+        }
         didDrag = true
         draggedControllers = dragged
         beginDraggingSession(with: items, event: event, source: self)
     }
 
     // MARK: Descartar deslizando
+
+    /// La miniatura sigue al ratón hacia el borde; hacia dentro ofrece resistencia.
+    private func slide(with event: NSEvent) {
+        guard let start = slideStart, let controller, let panel = window else { return }
+        let raw = NSEvent.mouseLocation.x - start.x
+        let offset = raw < 0 ? raw : raw * 0.18
+        let elapsed = event.timestamp - slideTime
+        if elapsed > 0.001 {
+            slideSpeed = slideSpeed * 0.4 + (offset - slideOffset) / CGFloat(elapsed) * 0.6
+            slideTime = event.timestamp
+        }
+        let crossed = offset <= -Self.dismissDistance
+        if crossed != (slideOffset <= -Self.dismissDistance) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+        slideOffset = offset
+        let target = controller.targetFrame
+        panel.setFrameOrigin(CGPoint(x: target.minX + offset, y: target.minY))
+        panel.alphaValue = 1 - min(1, max(0, -offset) / 240) * 0.65
+    }
+
+    private func endSlide() {
+        guard slideStart != nil, let controller, let panel = window else { return }
+        slideStart = nil
+        // Vale llegar lejos o dar un tirón rápido hacia el borde.
+        if slideOffset <= -Self.dismissDistance || (slideOffset < -12 && slideSpeed < -700) {
+            controller.dismiss()
+        } else {
+            settle(panel, to: controller.targetFrame)
+        }
+    }
+
+    private func settle(_ panel: NSWindow, to frame: CGRect) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = Theme.reduceMotion ? 0 : 0.3
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
+            panel.animator().setFrame(frame, display: true)
+            panel.animator().alphaValue = 1
+        }
+    }
 
     /// Deslizar con dos dedos hacia el borde de la pantalla lanza la miniatura fuera, como una notificación.
     override func scrollWheel(with event: NSEvent) {
@@ -864,18 +1100,14 @@ final class ThumbnailView: NSView, NSDraggingSource {
             if event.phase == .ended, swipeOffset < -90 {
                 controller.dismiss()
             } else {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = Theme.reduceMotion ? 0 : 0.3
-                    context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
-                    panel.animator().setFrame(controller.targetFrame, display: true)
-                    panel.animator().alphaValue = 1
-                }
+                settle(panel, to: controller.targetFrame)
             }
         }
     }
 
     override func mouseUp(with event: NSEvent) {
         defer { mouseDownPoint = nil }
+        endSlide()
         guard mouseDownPoint != nil, !didDrag else { return }
         controller?.preview()
     }
@@ -906,6 +1138,19 @@ final class ThumbnailView: NSView, NSDraggingSource {
         add("Copiar", "doc.on.doc", #selector(menuCopy))
         add("Guardar", "square.and.arrow.down", #selector(menuSave))
         add("Guardar como…", "folder", #selector(menuSaveAs))
+        if controller?.capture.recording != nil {
+            let formatItem = menu.addItem(withTitle: "Formato", action: nil, keyEquivalent: "")
+            formatItem.image = NSImage(systemSymbolName: "film", accessibilityDescription: nil)
+            let formatMenu = NSMenu()
+            addExportItems(to: formatMenu)
+            formatItem.submenu = formatMenu
+            menu.addItem(.separator())
+            add("Reproducir", "play", #selector(menuPreview))
+            menu.addItem(.separator())
+            add("Cerrar", "xmark", #selector(menuClose))
+            add("Cerrar todas", "xmark.circle", #selector(menuCloseAll))
+            return menu
+        }
         let exportItem = menu.addItem(withTitle: "Formato y tamaño", action: nil, keyEquivalent: "")
         exportItem.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: nil)
         let exportMenu = NSMenu()

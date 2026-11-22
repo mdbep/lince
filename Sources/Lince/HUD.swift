@@ -122,14 +122,22 @@ final class CountdownHUD {
     private let completion: (Bool) -> Void
 
     /// `completion(true)` al llegar a cero; `false` si se cancela con un clic.
-    static func run(seconds: Int, around rect: CGRect?, on screen: NSScreen, completion: @escaping (Bool) -> Void) {
+    /// Con `centered`, la cuenta va en el centro del área y sin contorno (lo usa la grabación, que ya pinta el suyo).
+    static func run(seconds: Int, around rect: CGRect?, on screen: NSScreen, centered: Bool = false,
+                    completion: @escaping (Bool) -> Void) {
         current?.finish(completed: false)
-        let hud = CountdownHUD(seconds: seconds, around: rect, on: screen, completion: completion)
+        let hud = CountdownHUD(seconds: seconds, around: rect, on: screen, centered: centered, completion: completion)
         current = hud
         hud.start()
     }
 
-    private init(seconds: Int, around rect: CGRect?, on screen: NSScreen, completion: @escaping (Bool) -> Void) {
+    /// Cancela la cuenta atrás en curso, si la hay.
+    static func cancel() {
+        current?.finish(completed: false)
+    }
+
+    private init(seconds: Int, around rect: CGRect?, on screen: NSScreen, centered: Bool,
+                 completion: @escaping (Bool) -> Void) {
         remaining = seconds
         self.completion = completion
         let size = CountdownView.size
@@ -138,7 +146,9 @@ final class CountdownHUD {
         // Fuera del área si cabe, para no tapar lo que se va a capturar.
         let visible = screen.visibleFrame
         var origin = CGPoint(x: visible.midX - size.width / 2, y: visible.minY + 60)
-        if let rect {
+        if let rect, centered {
+            origin = CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2)
+        } else if let rect {
             origin.x = rect.midX - size.width / 2
             if rect.minY - size.height - 16 >= visible.minY {
                 origin.y = rect.minY - size.height - 16
@@ -153,7 +163,7 @@ final class CountdownHUD {
         panel = CountdownHUD.makePanel(frame: CGRect(origin: origin, size: size))
         panel.contentView = view
 
-        if let rect {
+        if let rect, !centered {
             let outlinePanel = CountdownHUD.makePanel(frame: rect.insetBy(dx: -2, dy: -2))
             outlinePanel.ignoresMouseEvents = true
             outlinePanel.hasShadow = false

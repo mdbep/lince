@@ -26,6 +26,8 @@
     <true/>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Lince usa el micrófono solo cuando activas "Grabar el micrófono" en una grabación de pantalla.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>
