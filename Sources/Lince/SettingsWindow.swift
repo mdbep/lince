@@ -194,6 +194,8 @@ final class SettingsController: NSObject, NSWindowDelegate {
 
     private func capturePage() -> NSView {
         card([
+            row("Copiar al capturar", "Cada captura va directa al portapapeles, lista para pegar.",
+                toggle { Settings.copiesOnCapture } set: { Settings.copiesOnCapture = $0 }),
             row("Lupa al seleccionar", "Amplía la zona bajo el cursor para afinar al píxel.",
                 toggle { Settings.showsLoupe } set: { Settings.showsLoupe = $0 }),
             row("Imán en los bordes", "La selección se pega a los bordes de las ventanas. Con ⌘ pulsado, no.",

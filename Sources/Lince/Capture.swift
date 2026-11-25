@@ -25,6 +25,12 @@ enum Settings {
         set { defaults.set(newValue, forKey: "magnet") }
     }
 
+    /// Cada captura nueva va directa al portapapeles, lista para pegar.
+    static var copiesOnCapture: Bool {
+        get { defaults.object(forKey: "copiesOnCapture") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "copiesOnCapture") }
+    }
+
     static var shutterSound: ShutterSound {
         get { ShutterSound(rawValue: defaults.string(forKey: "shutterSound") ?? "") ?? .lince }
         set { defaults.set(newValue.rawValue, forKey: "shutterSound") }
@@ -351,10 +357,18 @@ final class Capture {
         }
     }
 
-    func copyToPasteboard() {
+    /// Copia la captura en cuanto esté codificada, sin detener la interfaz mientras tanto.
+    func copyWhenEncoded(to pasteboard: NSPasteboard = .general) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // Codificar es lo lento; el resultado queda en caché y copiarlo después es inmediato.
+            guard self?.exportedData() != nil else { return }
+            DispatchQueue.main.async { self?.copyToPasteboard(pasteboard) }
+        }
+    }
+
+    func copyToPasteboard(_ pasteboard: NSPasteboard = .general) {
         if let recording {
             guard let url = recording.readyURL else { return }
-            let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.writeObjects([url as NSURL])
             // Un GIF pequeño va también como imagen, para pegarlo en apps que no aceptan archivos.
@@ -370,7 +384,7 @@ final class Capture {
         let output = cachedImage ?? image
         let format = export.format
         lock.unlock()
-        Capture.copy(image: output, data: data, type: format.type)
+        Capture.copy(image: output, data: data, type: format.type, to: pasteboard)
     }
 
     @discardableResult
@@ -406,8 +420,7 @@ final class Capture {
         copy(image: image, data: png, type: .png)
     }
 
-    static func copy(image: CGImage, data: Data?, type: UTType) {
-        let pasteboard = NSPasteboard.general
+    static func copy(image: CGImage, data: Data?, type: UTType, to pasteboard: NSPasteboard = .general) {
         pasteboard.clearContents()
         let item = NSPasteboardItem()
         if let data { item.setData(data, forType: NSPasteboard.PasteboardType(type.identifier)) }

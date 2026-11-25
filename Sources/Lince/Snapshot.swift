@@ -312,6 +312,18 @@ enum Snapshot {
             try? data.write(to: directory.appendingPathComponent("backdrop-auto.png"))
         }
 
+        // Copia automática: en un portapapeles aparte, para no tocar el del usuario.
+        let board = NSPasteboard(name: NSPasteboard.Name("com.sowify.lince.check"))
+        board.clearContents()
+        let copied = Capture(image: image, scale: 2, export: ExportOptions(format: .png))
+        copied.copyWhenEncoded(to: board)
+        spin(until: { board.pasteboardItems?.isEmpty == false }, timeout: 10)
+        let pasted = board.data(forType: .png).flatMap { NSBitmapImageRep(data: $0) }
+        report += "Copia al capturar: por defecto \(Settings.copiesOnCapture), tipos \(board.types?.map(\.rawValue) ?? []), "
+            + "PNG \(pasted?.pixelsWide ?? 0)x\(pasted?.pixelsHigh ?? 0)\n"
+        board.releaseGlobally()
+        copied.cleanUp()
+
         report += RecordingChecks.run(to: directory)
         try? report.write(to: directory.appendingPathComponent("export.txt"), atomically: true, encoding: .utf8)
 

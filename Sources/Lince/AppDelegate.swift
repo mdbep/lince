@@ -527,6 +527,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, Thumbn
         capture.hasTransparency = hasTransparency
         thumbnails.add(capture, on: shot.screen, from: source)
         HistoryStore.shared.save(capture)
+        if Settings.copiesOnCapture { capture.copyWhenEncoded() }
     }
 
     /// Vuelve a sacar como miniatura una captura del historial.
